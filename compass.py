@@ -39,10 +39,15 @@ def sub(label):
     return (f'<tr><td style="padding:15px 22px 8px 22px;font-family:{MONO};font-size:10px;'
             f'font-weight:700;letter-spacing:2px;color:#8a8a8a;">{label}</td></tr>')
 
-def item(text, src=None, link=None, rule=True):
+def item(ed, text, src=None, link=None, rule=True):
+    # Source tag carries the edition accent. It is a dark-text-on-accent chip rather
+    # than accent-colored text: #eeff8c as text on white is 1.09:1 contrast, i.e.
+    # invisible. Same treatment as the edition label in head().
+    a = TH[ed]["accent"]
     tag = ""
     if src:
-        s = f'<span style="font-family:{MONO};font-size:10px;color:#a0a0a0;">[{src}]</span>'
+        s = (f'<span style="font-family:{MONO};font-size:10px;color:#111111;'
+             f'background:{a};padding:1px 5px;white-space:nowrap;">{src}</span>')
         tag = f' <a href="{link}" style="text-decoration:none;">{s}</a>' if link else f' {s}'
     b = "border-bottom:1px solid #eeeeea;" if rule else ""
     return (f'<tr><td style="padding:0 22px 9px 22px;"><div style="font-family:{SANS};font-size:14px;'

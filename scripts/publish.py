@@ -88,7 +88,7 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
                 rows.append(sub(b["label"]))
             items = b.get("items", [])
             for n, it in enumerate(items):
-                rows.append(item(it["text"], it.get("src"), it.get("url"),
+                rows.append(item(edition, it["text"], it.get("src"), it.get("url"),
                                  rule=n != len(items) - 1))
                 count += 1
     dropped = st["invented"] + st["dead"]
