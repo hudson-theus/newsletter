@@ -87,12 +87,27 @@ def fetch(entry: tuple[str, str]) -> list[dict]:
     return out
 
 
+# Scheduled run times in CT. Windows are keyed to these, not to the actual start
+# time, so a late run still covers the right span instead of a shifted one.
+AM_RUN = (8, 30)
+PM_RUN = (13, 45)
+
+
 def window_start(edition: str, now: dt.datetime) -> dt.datetime:
-    """Morning covers overnight; afternoon covers only what the morning couldn't."""
-    if edition == "am":
-        return (now - dt.timedelta(days=1)).replace(hour=17, minute=0, second=0,
-                                                    microsecond=0)
-    return now.replace(hour=11, minute=0, second=0, microsecond=0)
+    """Start where the previous edition stopped, so coverage is continuous.
+
+    The earlier fixed cutoffs (17:00 for AM, 11:00 for PM) left 5.75 hours of
+    every weekday in no edition at all — 08:30-11:00 and 13:45-17:00. The second
+    of those is after the US close, when a lot of deal news lands.
+    """
+    if edition == "pm":
+        # Picks up from this morning's edition.
+        return now.replace(hour=AM_RUN[0], minute=AM_RUN[1], second=0, microsecond=0)
+    # Morning picks up from the previous edition, which is yesterday's afternoon
+    # on weekdays and yesterday's morning at weekends (no PM edition Sat/Sun).
+    y = now - dt.timedelta(days=1)
+    h, m = PM_RUN if y.weekday() < 5 else AM_RUN
+    return y.replace(hour=h, minute=m, second=0, microsecond=0)
 
 
 def main() -> None:

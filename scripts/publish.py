@@ -35,13 +35,21 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 def resolves(url: str) -> tuple[str, bool]:
     """403 still renders for a human; only a missing page disqualifies a link."""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return url, r.status < 400
-    except urllib.error.HTTPError as e:
-        return url, e.code not in (404, 410)
-    except Exception:
-        return url, False
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return url, r.status < 400
+        except urllib.error.HTTPError as e:
+            return url, e.code not in (404, 410)
+        except Exception:
+            # Timeout, DNS blip, reset. Provenance already vouches for this URL —
+            # it came out of a feed parsed minutes ago — so a transient failure is
+            # not evidence the page is gone. Retry once, then keep the link rather
+            # than silently degrading a good item.
+            if attempt == 2:
+                print(f"  (unreachable, keeping link on provenance): {url}")
+                return url, True
+    return url, True
 
 
 def all_items(issue: dict):
@@ -52,10 +60,13 @@ def all_items(issue: dict):
 
 
 def verify(issue: dict, allowed: set[str]) -> dict:
-    invented = [i for i in all_items(issue) if i.get("url") and i["url"] not in allowed]
-    for i in invented:
-        print(f"  INVENTED (not in candidates): {i['url']}")
-        i["url"] = None
+    invented_seen = set()
+    for i in all_items(issue):
+        if i.get("url") and i["url"] not in allowed:
+            if i["url"] not in invented_seen:
+                print(f"  INVENTED (not in candidates): {i['url']}")
+            invented_seen.add(i["url"])
+            i["url"] = None
 
     urls = {i["url"] for i in all_items(issue) if i.get("url")}
     dead = set()
@@ -69,8 +80,9 @@ def verify(issue: dict, allowed: set[str]) -> dict:
         if i.get("url") in dead:
             i["url"] = None
 
-    issue["_stats"] = {"checked": len(urls) + len(invented),
-                       "invented": len(invented), "dead": len(dead)}
+    invented_urls = {i for i in invented_seen}
+    issue["_stats"] = {"checked": len(urls) + len(invented_urls),
+                       "invented": len(invented_urls), "dead": len(dead)}
     return issue
 
 
@@ -81,7 +93,9 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
     for s in issue["sections"]:
         rows.append(sec(edition, s["title"]))
         if s["title"].upper().startswith("FRONT"):
-            rows.append(lead(issue["front_matter"]))
+            fm = issue.get("front_matter")
+            if fm:
+                rows.append(lead(fm))
             continue
         for b in s.get("blocks", []):
             if b.get("label"):
@@ -97,6 +111,7 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
         f"{now:%-d %b %Y}".upper() + "<br>"
         f"{count} items. {st['checked']} links checked, {st['checked'] - dropped} shipped, "
         f"{dropped} dropped ({st['invented']} unsourced, {st['dead']} unresolved)."))
+    issue["_stats"]["items"] = count
     return wrap(rows)
 
 
@@ -152,6 +167,8 @@ def main() -> None:
     print(f"wrote {out} — {st['checked']} checked, "
           f"{st['invented']} invented, {st['dead']} dead")
 
+    if args.send and st["items"] == 0:
+        raise SystemExit("issue has zero items — refusing to send an empty brief")
     if args.send:
         send(html, args.edition, now)
         print("sent")
