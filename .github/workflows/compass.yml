@@ -1,0 +1,102 @@
+name: COMPASS
+
+on:
+  schedule:
+    # Actions cron is UTC and does not follow DST, so each edition gets two entries:
+    # one for CDT (UTC-5) and one for CST (UTC-6). The CT time-window guard in the
+    # job lets exactly one through and skips the other. Actions cron also drifts
+    # 5-20 min late, so these start ahead of the 8:45 / 2:00 CT targets.
+    - cron: '30 13 * * *'    # 08:30 CDT — morning, daily
+    - cron: '30 14 * * *'    # 08:30 CST — morning, daily
+    - cron: '45 18 * * 1-5'  # 13:45 CDT — afternoon, weekdays
+    - cron: '45 19 * * 1-5'  # 13:45 CST — afternoon, weekdays
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: Which edition to build
+        type: choice
+        options: [am, pm]
+        default: am
+      send:
+        description: Send the email (otherwise upload as an artifact only)
+        type: boolean
+        default: false
+
+# Least privilege. Nothing here writes to the repo.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Resolve edition + whether to send, once, for every later step.
+      - name: Resolve run parameters
+        id: cfg
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "edition=${{ inputs.edition }}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            [ "${{ inputs.send }}" = "true" ] && echo "send=--send" >> "$GITHUB_OUTPUT" || echo "send=" >> "$GITHUB_OUTPUT"
+          else
+            case "${{ github.event.schedule }}" in
+              *'13 * * *'|*'14 * * *') ED=am; WANT=8 ;;
+              *) ED=pm; WANT=13 ;;
+            esac
+            HOUR=$(TZ=America/Chicago date +%-H)
+            echo "edition=$ED" >> "$GITHUB_OUTPUT"
+            # The DST twin of this cron fires an hour off; skip that one.
+            [ "$HOUR" = "$WANT" ] && echo "skip=false" >> "$GITHUB_OUTPUT" || echo "skip=true" >> "$GITHUB_OUTPUT"
+            [ "${{ vars.COMPASS_SEND }}" = "true" ] && echo "send=--send" >> "$GITHUB_OUTPUT" || echo "send=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Stage 1 — deterministic. RSS in, date-filtered candidate list out.
+      - name: Collect candidates
+        if: steps.cfg.outputs.skip == 'false'
+        run: python scripts/collect.py --edition "${{ steps.cfg.outputs.edition }}"
+
+      # Stage 2 — the only model step. Reads candidates.json, writes issue.json.
+      # Authenticates with a Claude Pro/Max subscription token, not an API key.
+      - name: Curate issue
+        if: steps.cfg.outputs.skip == 'false'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read prompts/curate.md and follow it exactly. The edition is
+            "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
+          claude_args: |
+            --max-turns 30
+            --allowedTools Read,Write,Edit,Glob,Grep
+
+      # Stage 3 — deterministic. Provenance check, resolve check, render, send.
+      - name: Verify and publish
+        if: steps.cfg.outputs.skip == 'false'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+        run: |
+          python scripts/publish.py \
+            --edition "${{ steps.cfg.outputs.edition }}" \
+            ${{ steps.cfg.outputs.send }}
+
+      # Public repo: anyone can download run artifacts, so keep them short-lived.
+      # These are the newsletter body and its inputs — no addresses, no credentials.
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.cfg.outputs.skip == 'false'
+        with:
+          name: compass-${{ steps.cfg.outputs.edition }}
+          path: |
+            issue_*.html
+            issue.json
+            candidates.json
+          if-no-files-found: ignore
+          retention-days: 7

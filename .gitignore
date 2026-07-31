@@ -1,0 +1,21 @@
+# Local secrets. GitHub Actions secrets live in repo Settings, not in files —
+# this is only for running scripts/generate_issue.py on your own machine.
+.env
+*.env
+
+# Generated issues. The Action uploads these as artifacts; never commit them.
+issue_*.html
+
+# Local scratch
+build_issue.py
+smoketest.html
+*.tsv
+urls.txt
+final_links.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.venv-test/
