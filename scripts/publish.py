@@ -109,7 +109,23 @@ def send(html: str, edition: str, now: dt.datetime) -> None:
     msg.set_content("COMPASS is an HTML email. Enable HTML to read it.")
     msg.add_alternative(html, subtype="html")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-        s.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"])
+        try:
+            s.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"])
+        except smtplib.SMTPAuthenticationError as e:
+            # A raw traceback here is unreadable in a cron log, and the cause is
+            # almost always one of a short list. Say so.
+            raise SystemExit(
+                f"Gmail rejected the login ({e.smtp_code}).\n"
+                f"  GMAIL_ADDRESS is {os.environ['GMAIL_ADDRESS']!r}\n"
+                "  Check, in order:\n"
+                "    1. GMAIL_APP_PASSWORD is a 16-character app password, not the\n"
+                "       account password.\n"
+                "    2. It was stored with the spaces removed (Google displays it\n"
+                "       as 4 groups of 4).\n"
+                "    3. 2-step verification is on for that account — app passwords\n"
+                "       do not exist without it.\n"
+                "    4. The app password was generated for this exact address.\n"
+            ) from None
         s.send_message(msg)
 
 
