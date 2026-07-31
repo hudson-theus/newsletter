@@ -22,9 +22,12 @@ on:
         type: boolean
         default: false
 
-# Least privilege. Nothing here writes to the repo.
+# Least privilege. Nothing here writes to the repo — `contents` stays read-only.
+# `id-token: write` only permits requesting a short-lived OIDC identity token;
+# claude-code-action needs it to authenticate and it grants no repository access.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build:
