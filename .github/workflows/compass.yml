@@ -49,14 +49,22 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             [ "${{ inputs.send }}" = "true" ] && echo "send=--send" >> "$GITHUB_OUTPUT" || echo "send=" >> "$GITHUB_OUTPUT"
           else
+            # Each edition has two cron entries an hour apart, one correct under
+            # CDT and one under CST. Pick between them by the CURRENT Chicago
+            # offset, never by arrival time: Actions cron has been observed
+            # starting 83 minutes late, which is more than the hour separating
+            # the twins, so any time-of-arrival test misfires under drift.
             case "${{ github.event.schedule }}" in
-              *'13 * * *'|*'14 * * *') ED=am; WANT=8 ;;
-              *) ED=pm; WANT=13 ;;
+              '30 13 * * *')   ED=am; NEEDS=CDT ;;
+              '30 14 * * *')   ED=am; NEEDS=CST ;;
+              '45 18 * * 1-5') ED=pm; NEEDS=CDT ;;
+              '45 19 * * 1-5') ED=pm; NEEDS=CST ;;
+              *)               ED=am; NEEDS=$(TZ=America/Chicago date +%Z) ;;
             esac
-            HOUR=$(TZ=America/Chicago date +%-H)
+            NOW=$(TZ=America/Chicago date +%Z)
             echo "edition=$ED" >> "$GITHUB_OUTPUT"
-            # The DST twin of this cron fires an hour off; skip that one.
-            [ "$HOUR" = "$WANT" ] && echo "skip=false" >> "$GITHUB_OUTPUT" || echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "cron='${{ github.event.schedule }}' wants $NEEDS, Chicago is now $NOW"
+            [ "$NOW" = "$NEEDS" ] && echo "skip=false" >> "$GITHUB_OUTPUT" || echo "skip=true" >> "$GITHUB_OUTPUT"
             [ "${{ vars.COMPASS_SEND }}" = "true" ] && echo "send=--send" >> "$GITHUB_OUTPUT" || echo "send=" >> "$GITHUB_OUTPUT"
           fi
 
