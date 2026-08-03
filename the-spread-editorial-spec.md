@@ -22,7 +22,7 @@ noise fails that test. A $7M proptech seed round passes it.
 
 | | Time | Days | Scope |
 |---|---|---|---|
-| **Morning** | 8:45 AM CT | Every day | Full format, 60–75 items |
+| **Morning** | 9:00 AM CT | Every day | Full format, 60–75 items |
 | **Afternoon** | 2:00 PM CT | Mon–Fri | Only new items and follow-ups |
 
 **Weekends:** morning edition only. No 2 PM. Weekend issues run naturally shorter
@@ -222,7 +222,7 @@ delivery.
 
 ## 10. Delivery
 
-Morning edition 8:45 AM CT daily; afternoon edition 2:00 PM CT weekdays. Built and
+Morning edition 9:00 AM CT daily; afternoon edition 2:00 PM CT weekdays. Built and
 sent by scheduled automation, which carries this spec into each run since every run
 starts from a blank context.
 

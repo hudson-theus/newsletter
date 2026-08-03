@@ -4,14 +4,19 @@ name: COMPASS
 # late, and on 2026-08-03 the run was dropped entirely and the morning edition never
 # went out. A single cron per edition cannot survive that.
 #
-# So instead of one precise trigger, sweep: fire every 30 minutes across a window,
-# decide the edition from the current Chicago clock, and stop as soon as today's
-# edition has already gone out. Any one slot being dropped or delayed is absorbed by
-# the next. The Chicago-clock check also removes the need for CDT/CST cron twins.
+# Delivery is therefore decoupled from execution. Slots fire every 20 minutes across
+# a window starting an hour before the target; whichever one succeeds first builds
+# the issue and then HOLDS the send until exactly 09:00 or 14:00 CT. So the runner
+# may start anywhere in that window and the email still lands on the minute.
+#
+# The edition is chosen from the Chicago wall clock rather than from which cron
+# fired, so drift cannot misattribute a run — and no CDT/CST cron twins are needed.
+# A dated artifact marks a shipped edition so later slots stand down; a failed run
+# leaves no marker, so the next slot retries.
 on:
   schedule:
-    - cron: '0,30 13-16 * * *'     # 08:30-10:30 CT window (covers CDT and CST)
-    - cron: '15,45 18-21 * * 1-5'  # 13:45-15:45 CT window, weekdays
+    - cron: '0,20,40 13-16 * * *'     # 08:00-10:20 CT sweep (covers CDT and CST)
+    - cron: '0,20,40 18-21 * * 1-5'  # 13:00-15:20 CT sweep, weekdays
   workflow_dispatch:
     inputs:
       edition:
@@ -37,7 +42,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -61,9 +66,12 @@ jobs:
             HHMM=$(TZ=America/Chicago date +%H%M)
             DOW=$(TZ=America/Chicago date +%u)
             ED=""
-            if [ "$HHMM" -ge 0830 ] && [ "$HHMM" -le 1030 ]; then
+            # Sweep starts an hour before the target so several slots get a chance
+            # to build before the send time, and continues past it so a run that
+            # starts late still delivers (late) rather than not at all.
+            if [ "$HHMM" -ge 0800 ] && [ "$HHMM" -le 1020 ]; then
               ED=am
-            elif [ "$HHMM" -ge 1345 ] && [ "$HHMM" -le 1545 ] && [ "$DOW" -le 5 ]; then
+            elif [ "$HHMM" -ge 1300 ] && [ "$HHMM" -le 1520 ] && [ "$DOW" -le 5 ]; then
               ED=pm
             fi
             if [ -z "$ED" ]; then
@@ -86,9 +94,13 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
-          echo "building $ED (artifact $NAME)"
+          # Exact delivery times. The runner may start anywhere in the sweep;
+          # publish.py holds the send until this Chicago time.
+          [ "$ED" = "am" ] && AT=09:00 || AT=14:00
+          echo "building $ED (artifact $NAME, send at $AT CT)"
           {
-            echo "skip=false"; echo "edition=$ED"; echo "send=$SEND"; echo "artifact=$NAME"
+            echo "skip=false"; echo "edition=$ED"; echo "send=$SEND"
+            echo "artifact=$NAME"; echo "at=$AT"
           } >> "$GITHUB_OUTPUT"
 
       - name: Collect candidates
@@ -116,6 +128,7 @@ jobs:
         run: |
           python scripts/publish.py \
             --edition "${{ steps.cfg.outputs.edition }}" \
+            --send-at "${{ steps.cfg.outputs.at }}" \
             ${{ steps.cfg.outputs.send }}
 
       # Only on full success — this artifact is the "already shipped" marker, so a

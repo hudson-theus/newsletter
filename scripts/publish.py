@@ -19,6 +19,7 @@ import json
 import os
 import smtplib
 import sys
+import time
 import urllib.request
 import urllib.error
 from email.message import EmailMessage
@@ -150,6 +151,9 @@ def main() -> None:
     ap.add_argument("--issue", default="issue.json")
     ap.add_argument("--candidates", default="candidates.json")
     ap.add_argument("--send", action="store_true")
+    ap.add_argument("--send-at", metavar="HH:MM",
+                    help="hold the send until this Chicago time, so delivery lands "
+                         "on the minute regardless of when the runner started")
     args = ap.parse_args()
 
     now = dt.datetime.now(CT)
@@ -170,8 +174,22 @@ def main() -> None:
     if args.send and st["items"] == 0:
         raise SystemExit("issue has zero items — refusing to send an empty brief")
     if args.send:
+        if args.send_at:
+            hh, mm = (int(x) for x in args.send_at.split(":"))
+            target = dt.datetime.now(CT).replace(hour=hh, minute=mm, second=0,
+                                                 microsecond=0)
+            wait = (target - dt.datetime.now(CT)).total_seconds()
+            if wait > 0:
+                # The runner may have started anywhere in a two-hour window; idling
+                # here is what converts an unreliable start into an exact delivery.
+                print(f"built at {dt.datetime.now(CT):%H:%M:%S} — holding "
+                      f"{wait/60:.1f} min to send at {target:%H:%M:00} CT")
+                time.sleep(wait)
+            else:
+                print(f"target {args.send_at} CT already passed — sending now "
+                      f"({-wait/60:.1f} min late)")
         send(html, args.edition, now)
-        print("sent")
+        print(f"sent at {dt.datetime.now(CT):%H:%M:%S} CT")
     else:
         print("not sent (COMPASS_SEND is not 'true')")
 
