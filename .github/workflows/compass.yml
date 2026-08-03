@@ -1,15 +1,17 @@
 name: COMPASS
 
+# GitHub's scheduled events are best-effort: on 2026-07-31 a run started 83 minutes
+# late, and on 2026-08-03 the run was dropped entirely and the morning edition never
+# went out. A single cron per edition cannot survive that.
+#
+# So instead of one precise trigger, sweep: fire every 30 minutes across a window,
+# decide the edition from the current Chicago clock, and stop as soon as today's
+# edition has already gone out. Any one slot being dropped or delayed is absorbed by
+# the next. The Chicago-clock check also removes the need for CDT/CST cron twins.
 on:
   schedule:
-    # Actions cron is UTC and does not follow DST, so each edition gets two entries:
-    # one for CDT (UTC-5) and one for CST (UTC-6). The CT time-window guard in the
-    # job lets exactly one through and skips the other. Actions cron also drifts
-    # 5-20 min late, so these start ahead of the 8:45 / 2:00 CT targets.
-    - cron: '30 13 * * *'    # 08:30 CDT — morning, daily
-    - cron: '30 14 * * *'    # 08:30 CST — morning, daily
-    - cron: '45 18 * * 1-5'  # 13:45 CDT — afternoon, weekdays
-    - cron: '45 19 * * 1-5'  # 13:45 CST — afternoon, weekdays
+    - cron: '0,30 13-16 * * *'     # 08:30-10:30 CT window (covers CDT and CST)
+    - cron: '15,45 18-21 * * 1-5'  # 13:45-15:45 CT window, weekdays
   workflow_dispatch:
     inputs:
       edition:
@@ -18,16 +20,19 @@ on:
         options: [am, pm]
         default: am
       send:
-        description: Send the email (otherwise upload as an artifact only)
+        description: Send the email (otherwise artifact only)
         type: boolean
         default: false
 
-# Least privilege. Nothing here writes to the repo — `contents` stays read-only.
-# `id-token: write` only permits requesting a short-lived OIDC identity token;
-# claude-code-action needs it to authenticate and it grants no repository access.
 permissions:
   contents: read
-  id-token: write
+  id-token: write   # claude-code-action authenticates via OIDC
+  actions: read     # to see whether today's edition already shipped
+
+concurrency:
+  # Two sweep slots must never build the same edition at once.
+  group: compass-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -40,41 +45,56 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Resolve edition + whether to send, once, for every later step.
-      - name: Resolve run parameters
+      - name: Decide whether to build
         id: cfg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "edition=${{ inputs.edition }}" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            [ "${{ inputs.send }}" = "true" ] && echo "send=--send" >> "$GITHUB_OUTPUT" || echo "send=" >> "$GITHUB_OUTPUT"
+            ED="${{ inputs.edition }}"
+            [ "${{ inputs.send }}" = "true" ] && SEND="--send" || SEND=""
+            echo "manual run: edition=$ED"
           else
-            # Each edition has two cron entries an hour apart, one correct under
-            # CDT and one under CST. Pick between them by the CURRENT Chicago
-            # offset, never by arrival time: Actions cron has been observed
-            # starting 83 minutes late, which is more than the hour separating
-            # the twins, so any time-of-arrival test misfires under drift.
-            case "${{ github.event.schedule }}" in
-              '30 13 * * *')   ED=am; NEEDS=CDT ;;
-              '30 14 * * *')   ED=am; NEEDS=CST ;;
-              '45 18 * * 1-5') ED=pm; NEEDS=CDT ;;
-              '45 19 * * 1-5') ED=pm; NEEDS=CST ;;
-              *)               ED=am; NEEDS=$(TZ=America/Chicago date +%Z) ;;
-            esac
-            NOW=$(TZ=America/Chicago date +%Z)
-            echo "edition=$ED" >> "$GITHUB_OUTPUT"
-            echo "cron='${{ github.event.schedule }}' wants $NEEDS, Chicago is now $NOW"
-            [ "$NOW" = "$NEEDS" ] && echo "skip=false" >> "$GITHUB_OUTPUT" || echo "skip=true" >> "$GITHUB_OUTPUT"
-            [ "${{ vars.COMPASS_SEND }}" = "true" ] && echo "send=--send" >> "$GITHUB_OUTPUT" || echo "send=" >> "$GITHUB_OUTPUT"
+            # Edition comes from the Chicago wall clock, not from which cron fired,
+            # so drift cannot misattribute a run to the wrong edition.
+            HHMM=$(TZ=America/Chicago date +%H%M)
+            DOW=$(TZ=America/Chicago date +%u)
+            ED=""
+            if [ "$HHMM" -ge 0830 ] && [ "$HHMM" -le 1030 ]; then
+              ED=am
+            elif [ "$HHMM" -ge 1345 ] && [ "$HHMM" -le 1545 ] && [ "$DOW" -le 5 ]; then
+              ED=pm
+            fi
+            if [ -z "$ED" ]; then
+              echo "Chicago time $HHMM is outside both edition windows — nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            [ "${{ vars.COMPASS_SEND }}" = "true" ] && SEND="--send" || SEND=""
           fi
 
-      # Stage 1 — deterministic. RSS in, date-filtered candidate list out.
+          # Already shipped today? Each successful run leaves a dated artifact, so
+          # later sweep slots see it and stand down. A failed run leaves none, which
+          # is what lets the next slot retry.
+          TODAY=$(TZ=America/Chicago date +%F)
+          NAME="compass-$ED-$TODAY"
+          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+                   --jq "[.artifacts[] | select(.name==\"$NAME\" and .expired==false)] | length" \
+                   2>/dev/null || echo 0)
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ "$COUNT" -gt 0 ]; then
+            echo "$NAME already exists — today's $ED edition has shipped. Standing down."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          echo "building $ED (artifact $NAME)"
+          {
+            echo "skip=false"; echo "edition=$ED"; echo "send=$SEND"; echo "artifact=$NAME"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Collect candidates
         if: steps.cfg.outputs.skip == 'false'
         run: python scripts/collect.py --edition "${{ steps.cfg.outputs.edition }}"
 
-      # Stage 2 — the only model step. Reads candidates.json, writes issue.json.
-      # Authenticates with a Claude Pro/Max subscription token, not an API key.
       - name: Curate issue
         if: steps.cfg.outputs.skip == 'false'
         uses: anthropics/claude-code-action@v1
@@ -87,7 +107,6 @@ jobs:
             --max-turns 30
             --allowedTools Read,Write,Edit,Glob,Grep
 
-      # Stage 3 — deterministic. Provenance check, resolve check, render, send.
       - name: Verify and publish
         if: steps.cfg.outputs.skip == 'false'
         env:
@@ -99,12 +118,25 @@ jobs:
             --edition "${{ steps.cfg.outputs.edition }}" \
             ${{ steps.cfg.outputs.send }}
 
-      # Public repo: anyone can download run artifacts, so keep them short-lived.
-      # These are the newsletter body and its inputs — no addresses, no credentials.
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.cfg.outputs.skip == 'false'
+      # Only on full success — this artifact is the "already shipped" marker, so a
+      # partial run must not leave one behind or the next slot won't retry.
+      - name: Mark shipped
+        if: success() && steps.cfg.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
         with:
-          name: compass-${{ steps.cfg.outputs.edition }}
+          name: ${{ steps.cfg.outputs.artifact }}
+          path: |
+            issue_*.html
+            issue.json
+            candidates.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Keep failure output for debugging
+        if: failure() && steps.cfg.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-${{ github.run_id }}
           path: |
             issue_*.html
             issue.json
