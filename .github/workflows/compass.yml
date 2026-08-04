@@ -28,6 +28,10 @@ on:
         description: Send the email (otherwise artifact only)
         type: boolean
         default: false
+      force:
+        description: Build even if today's edition already shipped
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,7 +93,7 @@ jobs:
           COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
                    --jq "[.artifacts[] | select(.name==\"$NAME\" and .expired==false)] | length" \
                    2>/dev/null || echo 0)
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ "$COUNT" -gt 0 ]; then
+          if [ "${{ inputs.force }}" != "true" ] && [ "$COUNT" -gt 0 ]; then
             echo "$NAME already exists — today's $ED edition has shipped. Standing down."
             echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
