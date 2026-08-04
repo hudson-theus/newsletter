@@ -116,7 +116,7 @@ jobs:
             Read prompts/curate.md and follow it exactly. The edition is
             "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
           claude_args: |
-            --max-turns 30
+            --max-turns 120
             --allowedTools Read,Write,Edit,Glob,Grep
 
       - name: Verify and publish
