@@ -15,8 +15,13 @@ name: COMPASS
 # leaves no marker, so the next slot retries.
 on:
   schedule:
-    - cron: '0,20,40 13-16 * * *'     # 08:00-10:20 CT sweep (covers CDT and CST)
-    - cron: '0,20,40 18-21 * * 1-5'  # 13:00-15:20 CT sweep, weekdays
+    # Kept deliberately sparse. 24 fires/day is the profile GitHub throttles on a
+    # free public repo, and the day after the dense sweep went in, not one event
+    # fired. These are a BACKSTOP only — the primary trigger is external.
+    - cron: '40 13,14 * * *'     # 08:40 CT (one of the two matches, per DST)
+    - cron: '10 14,15 * * *'     # 09:10 CT retry
+    - cron: '40 18,19 * * 1-5'   # 13:40 CT
+    - cron: '10 19,20 * * 1-5'   # 14:10 CT retry
   workflow_dispatch:
     inputs:
       edition:
