@@ -43,7 +43,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write   # the drought-state commit doubles as the cron keepalive
   id-token: write   # claude-code-action authenticates via OIDC
   actions: read     # to see whether today's edition already shipped
 
@@ -131,6 +131,14 @@ jobs:
         if: steps.cfg.outputs.skip == 'false'
         continue-on-error: true
         run: python scripts/market.py
+
+      # Flags subsections that have been dark for several editions so the curator
+      # lowers their bar. Never fails the run: a missing attention list just means
+      # the curator is not nudged this time.
+      - name: Flag sections that have gone dark
+        if: steps.cfg.outputs.skip == 'false'
+        continue-on-error: true
+        run: python scripts/sections.py --prep
 
       # Curation is the only stage that can fail for reasons outside this repo.
       # On 2026-08-27 it died in 423ms on an auth rejection and took the whole
@@ -227,6 +235,27 @@ jobs:
             candidates.json
           if-no-files-found: warn
           retention-days: 7
+
+      # Records which tracked blocks shipped, so a subsection that keeps landing
+      # just below the bar escalates instead of silently never appearing. The
+      # commit is also what keeps the repo active: GitHub disables scheduled
+      # workflows after 60 days without a push, which would have silently killed
+      # the cron backstop around 2026-10-03.
+      - name: Record section coverage
+        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != ''
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python scripts/sections.py --record
+          if ! git diff --quiet -- state/sections.json; then
+            git config user.name  "compass-bot"
+            git config user.email "compass-bot@users.noreply.github.com"
+            git add state/sections.json
+            git commit -m "state: section coverage after ${{ steps.cfg.outputs.edition }} $(date -u +%F)"
+            git push
+          else
+            echo "no coverage change to record"
+          fi
 
       - name: Keep failure output for debugging
         if: failure() && steps.cfg.outputs.skip == 'false'

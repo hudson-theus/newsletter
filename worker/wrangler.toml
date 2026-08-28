@@ -17,3 +17,11 @@ crons = [
   "15,45 13,14 * * *",
   "15,45 18,19 * * 1-5",
 ]
+
+# Without this there are no Worker logs at all, and a missed fire cannot be told
+# apart from a fire that dispatched and was rejected. That ambiguity cost an
+# afternoon edition on 2026-08-28: the 18:15 UTC fire hit a Worker whose token
+# secret was not yet set, and nothing recorded it.
+[observability]
+enabled = true
+head_sampling_rate = 1

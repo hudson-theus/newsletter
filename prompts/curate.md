@@ -35,6 +35,24 @@ Eleven sections, this order, every issue:
 Omit any section or subsection with no real items rather than padding it. Omitting
 is correct behaviour and is reported, not penalised.
 
+## Sections that have gone dark
+
+`candidates.json` may carry an `attention` list. Each entry names a subsection that
+has now been absent for several consecutive editions, and how many candidates for it
+this run actually holds. This exists because "omit when empty" has a failure mode:
+a subsection that lands *slightly* below the bar every single time never appears at
+all, and the reader stops believing it exists.
+
+- `"level": "elevated"` — lower the bar for that block this issue. Take the best
+  candidate available if it is genuinely worth the reader's time.
+- `"level": "required"` — the block has been dark long enough that its absence is
+  now a defect. Ship the single strongest candidate for it.
+
+This never licenses padding or invention. If the honest answer is that nothing in
+the candidate list belongs there, omit it again and the count keeps climbing — that
+is the mechanism working, not failing. Lower the bar; do not abandon it. One real
+item is the target, not a full block.
+
 Candidate items carry a `section` hint (`economy`, `us`, `world`, `dallas`,
 `sports`, `uva`, `cre`, `retail`, `vc`, `ipo`, `deals`, `read`). Treat it as routing
 help, not as an assignment — a Dallas story big enough to be national news goes in
