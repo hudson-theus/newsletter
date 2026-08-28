@@ -61,9 +61,11 @@ def main() -> None:
 
     total = sum(len(b["items"]) for s in sections for b in s["blocks"])
     issue = {
-        "front_matter": ("Good morning. The curation step did not complete, so this "
-                         "is an unedited edition: real headlines from today's "
-                         "sources, grouped but not ranked or written up."),
+        # No greeting here: publish.py prepends it, so this line stays a
+        # sentence and the reader is addressed by name even on a fallback issue.
+        "front_matter": ("The curation step did not complete, so this is an "
+                         "unedited edition: real headlines from today's sources, "
+                         "grouped but not ranked or written up."),
         "sections": [{"title": "FRONT MATTER", "blocks": []}] + sections,
     }
     with open("issue.json", "w") as f:

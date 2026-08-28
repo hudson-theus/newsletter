@@ -74,6 +74,14 @@ def treasury() -> dict:
             out[key + "_wk_bps"] = round((now - was) * 100)
     if out.get("y10") is not None and out.get("y2") is not None:
         out["curve_2s10s_bps"] = round((out["y10"] - out["y2"]) * 100)
+
+    # The whole year of daily closes is already parsed and in hand. art.py draws
+    # the cover chart straight from it, so keep it rather than fetching it twice.
+    hist = [[(v.get("NEW_DATE") or "")[:10], f(v, "BC_10YEAR")]
+            for v in (vals(e) for e in ents)]
+    hist = [[d, y] for d, y in hist if y is not None]
+    if hist:
+        out["y10_series"] = hist
     return out
 
 

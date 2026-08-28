@@ -20,7 +20,7 @@ Eleven sections, this order, every issue:
 
 | # | Section | Items | Notes |
 |---|---|---|---|
-| 1 | FRONT MATTER | — | one sentence, five clauses, in `front_matter` |
+| 1 | FRONT MATTER | — | one sentence, five clauses, in `front_matter`. **No greeting** |
 | 2 | THE ECONOMY | 5–7 | state the rate path every issue, from `market.json` |
 | 3 | CRE SNAPSHOT | 3–5 | numbers line + direction. **No individual property sales.** |
 | 4 | CRE DESK | 6 | `RETAIL` and `PROPTECH &amp; CRE-TECH` only |
@@ -98,7 +98,7 @@ Write `issue.json` and nothing else. Shape:
 
 ```json
 {
-  "front_matter": "Good morning. <one sentence, five comma-separated clauses>",
+  "front_matter": "<one sentence, five comma-separated clauses>",
   "sections": [
     {"title": "FRONT MATTER", "blocks": []},
     {"title": "THE ECONOMY", "blocks": [
@@ -135,6 +135,10 @@ Write `issue.json` and nothing else. Shape:
 ```
 
 FRONT MATTER carries no blocks — its sentence goes in `front_matter`.
+
+Do **not** open it with a greeting. `publish.py` prepends "Good morning, Hudson."
+or "Good afternoon, Hudson." itself, so a greeting written here would be stripped
+and a duplicate is the only thing that can go wrong. Start on the first clause.
 
 ## Writing
 

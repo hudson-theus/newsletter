@@ -5,6 +5,7 @@
 
 # Generated issues. The Action uploads these as artifacts; never commit them.
 issue_*.html
+issue_*.gif
 
 # Local scratch
 build_issue.py

@@ -26,9 +26,17 @@ from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from compass import head, sec, sub, item, note, lead, foot, wrap  # noqa: E402
+import art  # noqa: E402
+from compass import head, sec, sub, item, note, lead, foot, wrap, greet  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
+
+# The reader is addressed by name, and the greeting is set here rather than by the
+# curator. A model that forgets it once would silently drop the most personal line
+# in the brief; generated here it is guaranteed, and fallback.py inherits it free.
+NAME = os.environ.get("COMPASS_NAME", "Hudson")
+GREETING = {"am": "Good morning", "pm": "Good afternoon"}
+EPOCH = dt.date(2026, 7, 30)   # issue No 1, morning edition
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
@@ -51,6 +59,24 @@ def resolves(url: str) -> tuple[str, bool]:
                 print(f"  (unreachable, keeping link on provenance): {url}")
                 return url, True
     return url, True
+
+
+def issue_number(day: dt.date, edition: str) -> int:
+    """Editions since the first one. AM daily, PM weekdays only."""
+    n = 0
+    d = EPOCH
+    while d < day:
+        n += 2 if d.weekday() < 5 else 1
+        d += dt.timedelta(days=1)
+    return n + (2 if edition == "pm" else 1)
+
+
+def opener(edition: str, sentence: str) -> str:
+    """Address the reader, then hand straight over to the day's five clauses."""
+    for stale in ("Good morning,", "Good afternoon,", "Good morning.", "Good afternoon."):
+        if sentence.strip().startswith(stale):
+            sentence = sentence.strip()[len(stale):].lstrip()
+    return sentence
 
 
 def all_items(issue: dict):
@@ -87,21 +113,27 @@ def verify(issue: dict, allowed: set[str]) -> dict:
     return issue
 
 
-def render(issue: dict, edition: str, now: dt.datetime) -> str:
+def render(issue: dict, edition: str, now: dt.datetime, assets: dict,
+           market: dict, issue_no: int) -> str:
     st = issue["_stats"]
-    rows = [head(edition, f"{now:%A, %B %-d, %Y}".upper(), f"{now:%-I:%M %p} CT")]
+    have = assets.__contains__
+    rows = [head(edition, f"{now:%A, %B %-d, %Y}".upper(), f"{now:%-I:%M %p} CT",
+                 issue_no, cover=have("cover"), ticker=have("ticker"),
+                 y10=market.get("y10"))]
     count = 0
-    for s in issue["sections"]:
-        if not s["title"].upper().startswith("FRONT") and not any(
-                b.get("items") for b in s.get("blocks", [])):
+    spark_used = False
+    for s_ in issue["sections"]:
+        if not s_["title"].upper().startswith("FRONT") and not any(
+                b.get("items") for b in s_.get("blocks", [])):
             continue  # omitted section: never render a heading with nothing under it
-        rows.append(sec(edition, s["title"]))
-        if s["title"].upper().startswith("FRONT"):
+        rows.append(sec(edition, s_["title"], marker=have("marker")))
+        if s_["title"].upper().startswith("FRONT"):
             fm = issue.get("front_matter")
+            rows.append(greet(f"{GREETING[edition]}, {NAME}.", card=have("greet")))
             if fm:
-                rows.append(lead(fm))
+                rows.append(lead(opener(edition, fm)))
             continue
-        for b in s.get("blocks", []):
+        for b in s_.get("blocks", []):
             if b.get("label"):
                 rows.append(sub(b["label"]))
             items = b.get("items", [])
@@ -110,8 +142,10 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
                     # Numbers lines (the rate path, the CRE snapshot) render as a
                     # tinted callout. They are the standing state-of-things the
                     # reader asked to see every issue, so they should not read as
-                    # just another bullet.
-                    rows.append(note(edition, it["text"]))
+                    # just another bullet. The first one carries the 10Y sparkline.
+                    use = have("spark") and not spark_used
+                    spark_used = spark_used or use
+                    rows.append(note(edition, it["text"], spark=use))
                 else:
                     rows.append(item(edition, it["text"], it.get("src"),
                                      it.get("url"), rule=n != len(items) - 1))
@@ -119,14 +153,14 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
     dropped = st["invented"] + st["dead"]
     rows.append(foot(edition,
         f"COMPASS / {'MORNING' if edition == 'am' else 'AFTERNOON'} EDITION / "
-        f"{now:%-d %b %Y}".upper() + "<br>"
+        f"NO {issue_no} / {now:%-d %b %Y}".upper() + "<br>"
         f"{count} items. {st['checked']} links checked, {st['checked'] - dropped} shipped, "
         f"{dropped} dropped ({st['invented']} unsourced, {st['dead']} unresolved)."))
     issue["_stats"]["items"] = count
     return wrap(rows)
 
 
-def send(html: str, edition: str, now: dt.datetime) -> None:
+def send(html: str, edition: str, now: dt.datetime, assets: dict) -> None:
     msg = EmailMessage()
     # [SPREAD] is a routing token the Apps Script matches on, not a display name.
     msg["Subject"] = f"[SPREAD] COMPASS {'AM' if edition == 'am' else 'PM'} / {now:%b %-d}"
@@ -134,6 +168,12 @@ def send(html: str, edition: str, now: dt.datetime) -> None:
     msg["To"] = os.environ["RECIPIENT"]
     msg.set_content("COMPASS is an HTML email. Enable HTML to read it.")
     msg.add_alternative(html, subtype="html")
+    # The motion rides along as content-id parts rather than hotlinked URLs: the
+    # art is rebuilt every issue, so there is nothing in the repo to link to, and
+    # cid attachments render without a round trip to raw.githubusercontent.
+    html_part = msg.get_payload()[-1]
+    for key, data in assets.items():
+        html_part.add_related(data, maintype="image", subtype="gif", cid=f"<{key}>")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
         try:
             s.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"])
@@ -160,6 +200,7 @@ def main() -> None:
     ap.add_argument("--edition", choices=["am", "pm"], required=True)
     ap.add_argument("--issue", default="issue.json")
     ap.add_argument("--candidates", default="candidates.json")
+    ap.add_argument("--market", default="market.json")
     ap.add_argument("--send", action="store_true")
     ap.add_argument("--send-at", metavar="HH:MM",
                     help="hold the send until this Chicago time, so delivery lands "
@@ -170,16 +211,48 @@ def main() -> None:
     issue = json.load(open(args.issue))
     allowed = {i["url"] for i in json.load(open(args.candidates))["items"]}
 
+    try:
+        market = json.load(open(args.market))
+    except Exception as e:
+        # The snapshot is a nice-to-have for the cover; the brief is not.
+        print(f"no market data ({type(e).__name__}) — cover falls back to plain")
+        market = {}
+
     print(f"verifying against {len(allowed)} sourced URLs")
     issue = verify(issue, allowed)
-    html = render(issue, args.edition, now)
 
-    out = f"issue_{now:%Y-%m-%d}_{args.edition}.html"
+    no = issue_number(now.date(), args.edition)
+    # Built before the send-hold so GIF encoding can never eat into the minute the
+    # edition is due, and guarded whole: no image is worth losing an edition over.
+    try:
+        assets = art.build(args.edition, market, f"{now:%A, %B %-d, %Y}".upper(),
+                           f"{now:%-I:%M %p} CT", no, NAME)
+    except Exception as e:
+        print(f"art stage failed entirely ({type(e).__name__}: {e}) — shipping plain")
+        assets = {}
+
+    html = render(issue, args.edition, now, assets, market, no)
+
+    stem = f"issue_{now:%Y-%m-%d}_{args.edition}"
+    out = f"{stem}.html"
+    # The on-disk copy points at sidecar files so the issue can be opened and
+    # checked in a browser; only the emailed copy uses cid.
+    disk = html
+    for key, data in assets.items():
+        name = f"{stem}_{key}.gif"
+        with open(name, "wb") as f:
+            f.write(data)
+        disk = disk.replace(f"cid:{key}", name)
     with open(out, "w") as f:
-        f.write(html)
+        f.write(disk)
     st = issue["_stats"]
+    kb = len(html.encode()) / 1024
     print(f"wrote {out} — {st['checked']} checked, "
-          f"{st['invented']} invented, {st['dead']} dead")
+          f"{st['invented']} invented, {st['dead']} dead, {kb:.0f} kB html")
+    if kb > 95:
+        # Gmail clips the body past ~102 kB and hides the tail behind a "View
+        # entire message" link, which would silently amputate the last sections.
+        print(f"  WARNING: {kb:.0f} kB is close to Gmail's 102 kB clip threshold")
 
     if args.send and st["items"] == 0:
         raise SystemExit("issue has zero items — refusing to send an empty brief")
@@ -198,7 +271,7 @@ def main() -> None:
             else:
                 print(f"target {args.send_at} CT already passed — sending now "
                       f"({-wait/60:.1f} min late)")
-        send(html, args.edition, now)
+        send(html, args.edition, now, assets)
         print(f"sent at {dt.datetime.now(CT):%H:%M:%S} CT")
     else:
         print("not sent (COMPASS_SEND is not 'true')")

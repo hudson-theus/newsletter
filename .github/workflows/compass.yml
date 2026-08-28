@@ -63,6 +63,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # The only third-party dependency in the repo, and it is deliberately
+      # optional: art.py renders the covers with it and ships the issue plain
+      # without it. A PyPI outage costs the motion, never the edition.
+      - name: Install the renderer
+        continue-on-error: true
+        run: pip install --disable-pip-version-check --quiet Pillow
+
       - name: Decide whether to build
         id: cfg
         env:
@@ -235,6 +242,7 @@ jobs:
           name: ${{ steps.cfg.outputs.artifact }}
           path: |
             issue_*.html
+            issue_*.gif
             issue.json
             candidates.json
           if-no-files-found: warn
@@ -268,6 +276,7 @@ jobs:
           name: failed-${{ github.run_id }}
           path: |
             issue_*.html
+            issue_*.gif
             issue.json
             candidates.json
           if-no-files-found: ignore
