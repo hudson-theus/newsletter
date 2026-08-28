@@ -1,0 +1,19 @@
+name = "compass-trigger"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Cloudflare cron is UTC-only and Chicago changes offset twice a year, so each
+# slot fires on BOTH candidate UTC hours and the Worker itself checks the real
+# Chicago clock before dispatching. Exactly one of the pair passes that check on
+# any given day, so there is no DST gap and no duplicate.
+#
+# Two slots per edition. The first is the trigger; the second is a retry that the
+# workflow's shipped-marker turns into a no-op once the edition has gone out.
+#
+# 13:15/13:45 UTC = 08:15/08:45 CDT   |   14:15/14:45 UTC = 08:15/08:45 CST
+# 18:15/18:45 UTC = 13:15/13:45 CDT   |   19:15/19:45 UTC = 13:15/13:45 CST
+[triggers]
+crons = [
+  "15,45 13,14 * * *",
+  "15,45 18,19 * * 1-5",
+]

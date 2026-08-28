@@ -19,3 +19,8 @@ __pycache__/
 .venv/
 venv/
 .venv-test/
+
+# Build outputs. Regenerated every run and uploaded as artifacts.
+candidates.json
+issue.json
+market.json

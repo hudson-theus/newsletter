@@ -15,13 +15,17 @@ name: COMPASS
 # leaves no marker, so the next slot retries.
 on:
   schedule:
-    # Kept deliberately sparse. 24 fires/day is the profile GitHub throttles on a
-    # free public repo, and the day after the dense sweep went in, not one event
-    # fired. These are a BACKSTOP only — the primary trigger is external.
-    - cron: '40 13,14 * * *'     # 08:40 CT (one of the two matches, per DST)
-    - cron: '10 14,15 * * *'     # 09:10 CT retry
+    # BACKSTOP ONLY — the primary trigger is the Cloudflare Worker. Measured over
+    # 2026-08-11..27, GitHub dropped 12 of 112 scheduled fires (11%) and drifted
+    # every survivor between 12 and 129 minutes; on 08-27 all four morning fires
+    # were dropped outright. So these fire EARLY, and the windows below are wide
+    # enough that a fire arriving an hour late still ships the edition.
+    - cron: '10 13,14 * * *'     # 08:10 CT (one of the two matches, per DST)
+    - cron: '40 13,14 * * *'     # 08:40 CT
+    - cron: '20 14,15 * * *'     # 09:20 CT
+    - cron: '10 18,19 * * 1-5'   # 13:10 CT
     - cron: '40 18,19 * * 1-5'   # 13:40 CT
-    - cron: '10 19,20 * * 1-5'   # 14:10 CT retry
+    - cron: '20 19,20 * * 1-5'   # 14:20 CT
   workflow_dispatch:
     inputs:
       edition:
@@ -78,9 +82,14 @@ jobs:
             # Sweep starts an hour before the target so several slots get a chance
             # to build before the send time, and continues past it so a run that
             # starts late still delivers (late) rather than not at all.
-            if [ "$HHMM" -ge 0800 ] && [ "$HHMM" -le 1020 ]; then
+            # These windows are deliberately wide. On 2026-08-26 both afternoon
+            # crons were dropped and two later fires DID start — at 16:10 and
+            # 16:48 CT — but the old window ended at 15:20, so both computed an
+            # empty edition and stood down. A late edition was available and was
+            # thrown away. Late beats never.
+            if [ "$HHMM" -ge 0700 ] && [ "$HHMM" -le 1145 ]; then
               ED=am
-            elif [ "$HHMM" -ge 1300 ] && [ "$HHMM" -le 1520 ] && [ "$DOW" -le 5 ]; then
+            elif [ "$HHMM" -ge 1200 ] && [ "$HHMM" -le 1645 ] && [ "$DOW" -le 5 ]; then
               ED=pm
             fi
             if [ -z "$ED" ]; then
@@ -116,8 +125,21 @@ jobs:
         if: steps.cfg.outputs.skip == 'false'
         run: python scripts/collect.py --edition "${{ steps.cfg.outputs.edition }}"
 
-      - name: Curate issue
+      # Never fails the run. A snapshot missing a series costs those numbers; it
+      # must not cost the edition.
+      - name: Collect market numbers
         if: steps.cfg.outputs.skip == 'false'
+        continue-on-error: true
+        run: python scripts/market.py
+
+      # Curation is the only stage that can fail for reasons outside this repo.
+      # On 2026-08-27 it died in 423ms on an auth rejection and took the whole
+      # afternoon edition with it. Three attempts, then a deterministic fallback,
+      # so a transient failure can no longer produce zero email.
+      - name: Curate issue (attempt 1)
+        id: curate1
+        if: steps.cfg.outputs.skip == 'false'
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -127,6 +149,58 @@ jobs:
           claude_args: |
             --max-turns 120
             --allowedTools Read,Write,Edit,Glob,Grep
+
+      - name: Back off before retry
+        if: steps.cfg.outputs.skip == 'false' && steps.curate1.outcome == 'failure'
+        run: sleep 60
+
+      - name: Curate issue (attempt 2)
+        id: curate2
+        if: steps.cfg.outputs.skip == 'false' && steps.curate1.outcome == 'failure'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read prompts/curate.md and follow it exactly. The edition is
+            "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
+          claude_args: |
+            --max-turns 120
+            --allowedTools Read,Write,Edit,Glob,Grep
+
+      - name: Back off before final retry
+        if: steps.cfg.outputs.skip == 'false' && steps.curate2.outcome == 'failure'
+        run: sleep 180
+
+      - name: Curate issue (attempt 3)
+        id: curate3
+        if: steps.cfg.outputs.skip == 'false' && steps.curate2.outcome == 'failure'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read prompts/curate.md and follow it exactly. The edition is
+            "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
+          claude_args: |
+            --max-turns 120
+            --allowedTools Read,Write,Edit,Glob,Grep
+
+      # A curated issue.json that is missing, empty, or unparseable is treated the
+      # same as a failed step: fall back rather than ship nothing.
+      - name: Fall back to an unedited issue if curation never produced one
+        if: steps.cfg.outputs.skip == 'false'
+        run: |
+          if python -c "
+          import json,sys
+          d=json.load(open('issue.json'))
+          n=sum(len(b.get('items',[])) for s in d['sections'] for b in s.get('blocks',[]))
+          sys.exit(0 if n else 1)" 2>/dev/null; then
+            echo "curated issue.json is present and non-empty"
+          else
+            echo "::warning::curation produced no usable issue — building the unedited fallback"
+            python scripts/fallback.py
+          fi
 
       - name: Verify and publish
         if: steps.cfg.outputs.skip == 'false'

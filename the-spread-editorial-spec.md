@@ -7,14 +7,27 @@ neon orange.*
 
 ## 1. Reader
 
-An economics major, not a finance professional. No P&L, no trading book. Builds
-software for commercial real estate clients, primarily
-retail brokerage. Cares about M&A, VC, AI, IPOs, and startups as an operator and
-a builder, not as a trader. Wants CRE as a working input to client conversations.
-Wants enough general news to be a literate human.
+An economics major, not a finance professional. No P&L, no trading book. Works at
+a startup building software for commercial real estate clients, primarily retail
+brokerage. Cares about M&A, VC, AI, IPOs, and startups as an operator and a
+builder, not as a trader. Wants CRE as market context, not as a deal feed. Wants
+enough general news to be a literate human.
+
+Lives in **Dallas, Texas**. Went to **the University of Virginia**. Follows the
+**Dallas Cowboys** closely, plus the **Mavericks** and **UVA football and
+basketball**.
+
+**He has no subscriptions.** Every link must open for a reader who has not paid
+for anything. A paywalled link is a dead end even when the story is real, and a
+free wire almost always carries the same facts.
 
 The test for every item: **would the reader be worse off not knowing this?** Market
-noise fails that test. A $7M proptech seed round passes it.
+noise fails that test. A $7M proptech seed round passes it. An individual shopping
+centre changing hands does not — he does not know the firms and does not trade.
+
+**What he should have after reading:** the state of the US economy including CRE,
+what happened in his country, what happened in the world, what happened in Dallas,
+and what happened to his teams.
 
 ---
 
@@ -22,7 +35,7 @@ noise fails that test. A $7M proptech seed round passes it.
 
 | | Time | Days | Scope |
 |---|---|---|---|
-| **Morning** | 9:00 AM CT | Every day | Full format, 60–75 items |
+| **Morning** | 9:00 AM CT | Every day | Full format, 55–65 items |
 | **Afternoon** | 2:00 PM CT | Mon–Fri | Only new items and follow-ups |
 
 **Weekends:** morning edition only. No 2 PM. Weekend issues run naturally shorter
@@ -39,7 +52,13 @@ nothing, fall back to a hard time window: include only items published after
 
 ## 3. Structure
 
-Same seven sections, same order, every single day. Predictability is the point.
+Same eleven sections, same order, every single day. Predictability is the point.
+
+Front Matter · The Economy · CRE Snapshot · CRE Desk · Deal Flow · AI & Enterprise ·
+United States · The World · Dallas / Texas · Sports · Worth Reading
+
+A section with nothing real in it is omitted for that issue rather than padded. The
+order never changes.
 
 ### Front Matter
 One sentence. Five clauses, comma-separated, naming the day's five biggest
@@ -59,32 +78,73 @@ macro and the cap rates his clients live on.
 Numbers only where the number carries the story. No index recap unless a move is
 genuinely large or structurally interesting. No "stocks closed mixed."
 
+**The rate path is stated every issue**, even on a quiet day, because "nothing moved"
+is itself the state of the economy and the reader asked to leave every issue knowing
+where things stand. Use `market.json` for the level and the move; never estimate a
+number that is missing from it.
+
+### CRE Snapshot
+
+**This section is market health, not transactions.** It exists because the reader
+asked for trends and condition rather than a feed of acquisitions, and because on a
+quiet day the CRE wires carry three property trades and nothing about the state of
+the market. Numbers are always available; deals are not.
+
+Opens with a **numbers line** built from `market.json`, which is collected
+deterministically before the model runs. Always leads with the 10Y, because that is
+the number that sets what the reader's clients' buyers can borrow at. Then the
+curve, then the mortgage rate, then whichever slower series are present.
+
+Follows with **two to four sentences of direction**: where cap rates are heading,
+where distress is concentrated, what is refinancing and at what cost, what the
+lending market is doing. Written from the CRE wires and Trepp's CMBS commentary.
+
+Never list an individual property sale here. If `market.json` is missing a series,
+omit that number silently — never estimate one, never carry a stale figure forward.
+
 ### CRE Desk
-Ten to fourteen items across three standing subsections:
 
-- **Capital Markets** — cap rate movement, large trades, CMBS issuance and
-  spreads, debt fund activity, REIT prints, distress
-- **Retail** — tenant expansion and closures, retail investment sales, retail
-  REIT results, leasing trends, anything a retail brokerage
-  would be discussing
+Six items, in two subsections. Deliberately half its former size.
+
+- **Retail** — tenant expansion and closures, leasing trends, consumer demand
+  signals, anything a retail brokerage would be discussing with a client. Tenant
+  and demand news only; retail *investment sales* belong nowhere in this issue.
 - **Proptech & CRE-Tech** — funding rounds, product launches, competitor moves.
-  Include small rounds. A $7M seed is the competitive landscape.
+  Include small rounds. A $7M seed is the competitive landscape, and this is the
+  reader's own industry.
 
-**Texas/DFW** appears as an optional fourth block only when something real
-happens. Not a standing section, never padded.
+**Capital Markets has been removed as a standing subsection.** It was where the
+individual acquisitions lived. Anything genuinely structural that would have gone
+there — a large REIT failing, a lender pulling out of a whole asset class — belongs
+in the CRE Snapshot as a trend, stated as what it implies rather than as a trade.
 
 ### Deal Flow
-Thirty to thirty-five items. Exec Sum's format is correct and stays: one line
-each, entity names bolded, dollar figure always stated, lead investor or acquirer
-always named, no explanation.
 
-Subsections: M&A / Strategic · VC · IPOs & Listings · Debt · Funds & Secondaries ·
+Twenty-two to twenty-six items, down from thirty-five. One line each, entity names
+bolded, dollar figure always stated, lead investor or acquirer always named, no
+explanation.
+
+Subsections: VC · IPOs & Listings · M&A / Strategic · Debt · Funds & Secondaries ·
 Distressed (when it exists).
 
-**Sort rule:** within each subsection, AI, CRE, retail, and proptech deals are
-pulled to the top regardless of size. Everything below them sorts descending by
-dollar value. Full coverage is retained — nothing is dropped for being off-theme,
-it is just ranked below the things that matter to him.
+**VC and IPOs lead the section**, ahead of M&A. The reader works at a startup; the
+financing environment for companies at his stage is more useful to him than a
+strategic acquisition between two firms he has never heard of.
+
+**Sort rule:** within each subsection, AI, proptech, and CRE-tech deals are pulled
+to the top regardless of size. Everything below them sorts descending by dollar
+value. **Individual commercial property trades sort last, below everything else,
+and are cut first when the section runs long** — this reverses the previous rule,
+which promoted them.
+
+**VC items carry an operator's read** where there is one: the stage, whether it is
+an up or down round, who led and whether they have been in this space before, what
+the valuation implies. "**Acme** raised $40M" is a fact. "**Acme** raised $40M at
+a flat valuation eighteen months after its Series A, led by the same fund" is the
+thing he would want to know.
+
+**IPOs & Listings** covers filings, pricings, first-day trading, withdrawals, and
+direct listings. A withdrawn or postponed IPO is as informative as a priced one.
 
 ### AI & Enterprise
 Six to eight items, written for a builder rather than a trader. Model and agent
@@ -92,42 +152,104 @@ releases, enterprise deployments and what they actually do, developer tooling,
 infrastructure, notable research. Skip pure AI-as-market-narrative — that belongs
 in The Economy or Deal Flow.
 
-### The World
-Six to eight items. Geopolitics, policy, science, culture, and genuinely
-interesting one-offs. High bar: only what a well-read person would want to know.
+### United States
 
-**Sports filter:** Dallas Cowboys and Dallas Mavericks only, and only when it is
-actual news. No baseball, no hockey.
+Four to six items. National news that is not primarily economic: politics and
+policy, courts and legal, disasters and public safety, health, science, culture.
+
+### The World
+
+Five to seven items, and they must actually be about the world. Geopolitics,
+elections and governments, conflict, trade, science, and genuinely interesting
+one-offs from outside the United States.
+
+**Regional spread is binding.** The section must span **at least three distinct
+regions**. A World section that is six stories about one country is not a World
+section.
+
+**Person cap.** No single political figure may anchor more than **two items across
+United States and The World combined.** The previous issues failed this badly:
+every World item was a US-politics story about the same person, which is what
+prompted the split. When a figure genuinely drives more than two stories, keep the
+two that matter most and let the rest go.
+
+### Dallas / Texas
+
+Three to five items. Dallas first, then DFW, then statewide. City and county
+government, local business and development, transit and infrastructure, the local
+economy, notable local stories. A Dallas item large enough to be national news
+belongs in United States instead, not in both.
+
+### Sports
+
+Three to five items, and **only** these:
+
+- **Cowboys & NFL** — the Cowboys always, plus league-wide news worth knowing.
+- **Mavericks** — Mavs news.
+- **Virginia** — UVA football and basketball, plus genuinely large UVA news of any
+  kind, athletic or not.
+
+Nothing else. No baseball, no hockey, no soccer, no other college programmes, no
+other NBA teams except as they bear on the Mavs. **The section scales with the
+calendar** — heavier once football starts, thin in June. Do not pad it, and omit it
+entirely on a day when nothing real happened.
+
+Scores alone are not items. What happened and what it means for the season is.
 
 ### Worth Reading
-Two or three longreads with a one-line description of what each argues.
 
----
+Three or four items.
+
+**An item here must be an argument or an explainer, not a news report.** If it
+could run in United States or The World, it does not belong here. The test: does it
+make a case, teach a mechanism, or change how the reader sees something?
+
+Each carries one line on **what it argues** — not what it is about. "A piece on
+housing policy" is a failure. "Argues that parking minimums, not zoning, are the
+binding constraint on urban housing supply" is the item.
+
+Prefer pieces that connect to what he does — cities and building, economics,
+technology and its second-order effects — but a genuinely excellent piece on
+anything qualifies. Never fill this section to reach three.
 
 ## 4. Excluded, permanently
 
 Memes. Recruiting. Crypto. Sponsored content. Equity market recaps.
 Prediction-market plugs. Anything that exists to fill space.
 
+**Individual commercial property acquisitions.** A shopping centre, office tower, or
+industrial park changing hands is not an item. The reader does not know the firms
+and does not trade. What a wave of such trades implies about pricing or distress
+belongs in the CRE Snapshot as a trend.
+
+**Anything behind a paywall.** See section 5.
+
+**Sports outside the Cowboys, NFL, Mavericks, and UVA.** See section 3.
+
 ---
 
 ## 5. Sourcing
 
-**Free-first.** Reuters, CNBC, AP, Axios, TechCrunch, and the CRE trades cover
-most of what matters and cost nothing. CRE in particular is better served free
-than paywalled: Bisnow, GlobeSt, Connect CRE, Commercial Observer, The Real Deal.
+**Free only. This is a hard constraint, not a preference.** The reader has no
+subscriptions. A paywalled link is a dead end even when the story is real, so a
+story that exists only behind a paywall is covered from a free wire or not at all.
 
-Use FT, Bloomberg, or WSJ when they are the only source, or when the story is
-significant enough to warrant the deeper read. Where a story exists in both
-places, lead with the free version.
+Do not use FT, Bloomberg, WSJ, The Economist, The Atlantic, The New Yorker,
+Stratechery, The Information, or The Athletic. Where one of them broke a story that
+matters, a free source will be carrying it within hours — use that one, and if
+nothing free carries it, drop the item.
 
-**Mark paywalled links inline** with a lock so the reader knows before clicking:
-`(BBG 🔒)`. Source tag in parentheses after every item, Exec Sum style:
-`(RT)` `(CNBC)` `(TC)` `(Axios)` `(Bisnow)` `(FT 🔒)`.
+**Prefer wire-service and straight-news outlets** — AP, Axios, Reuters-style
+reporting, CNBC, NPR, PBS, BBC — over comment and analysis, except in Worth
+Reading where argument is the point.
 
-No paywall-circumvention routing. If a source proves load-bearing, subscribe.
+Every candidate in `candidates.json` is already from a free source; the collector
+enforces this. Do not go looking for others.
 
----
+**Source tags are real outlet names**, not initialisms: `(AP)` `(Axios)` `(CNBC)`
+`(TechCrunch)` `(Bisnow)` `(Dallas Morning News)` `(Cavalier Daily)`. Copy the
+`src` field verbatim from the candidate — it is already correct. No lock glyphs are
+needed, because nothing paywalled should be in the issue.
 
 ## 6. Link protocol
 

@@ -92,6 +92,9 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
     rows = [head(edition, f"{now:%A, %B %-d, %Y}".upper(), f"{now:%-I:%M %p} CT")]
     count = 0
     for s in issue["sections"]:
+        if not s["title"].upper().startswith("FRONT") and not any(
+                b.get("items") for b in s.get("blocks", [])):
+            continue  # omitted section: never render a heading with nothing under it
         rows.append(sec(edition, s["title"]))
         if s["title"].upper().startswith("FRONT"):
             fm = issue.get("front_matter")
@@ -103,8 +106,15 @@ def render(issue: dict, edition: str, now: dt.datetime) -> str:
                 rows.append(sub(b["label"]))
             items = b.get("items", [])
             for n, it in enumerate(items):
-                rows.append(item(edition, it["text"], it.get("src"), it.get("url"),
-                                 rule=n != len(items) - 1))
+                if it.get("note"):
+                    # Numbers lines (the rate path, the CRE snapshot) render as a
+                    # tinted callout. They are the standing state-of-things the
+                    # reader asked to see every issue, so they should not read as
+                    # just another bullet.
+                    rows.append(note(edition, it["text"]))
+                else:
+                    rows.append(item(edition, it["text"], it.get("src"),
+                                     it.get("url"), rule=n != len(items) - 1))
                 count += 1
     dropped = st["invented"] + st["dead"]
     rows.append(foot(edition,

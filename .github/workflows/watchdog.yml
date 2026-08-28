@@ -1,0 +1,109 @@
+name: COMPASS watchdog
+
+# Nothing used to notice a missed edition. On 2026-08-26 the afternoon edition
+# never ran and on 08-27 the morning edition never ran; both were discovered by
+# the reader not receiving them, a day later.
+#
+# This runs after each edition's window has closed and asks one question: does a
+# shipped-marker exist for today? If not, it forces a build (late, but real) and
+# says so by email. A miss can no longer be silent, and it self-heals.
+on:
+  schedule:
+    - cron: '0 17,18 * * *'     # 12:00 CT — after the morning window closes
+    - cron: '0 22,23 * * 1-5'   # 17:00 CT — after the afternoon window closes
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: compass-watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Did today's edition ship?
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          HHMM=$(TZ=America/Chicago date +%H%M)
+          DOW=$(TZ=America/Chicago date +%u)
+          TODAY=$(TZ=America/Chicago date +%F)
+
+          # Which edition should already exist by now?
+          if   [ "$HHMM" -ge 1145 ] && [ "$HHMM" -lt 1630 ]; then ED=am
+          elif [ "$HHMM" -ge 1630 ] && [ "$DOW" -le 5 ];     then ED=pm
+          else
+            echo "nothing is due to have shipped yet"; echo "miss=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+                   --jq "[.artifacts[] | select(.name==\"compass-$ED-$TODAY\" and .expired==false)] | length" \
+                   2>/dev/null || echo 0)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "compass-$ED-$TODAY shipped. Nothing to do."
+            echo "miss=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::compass-$ED-$TODAY is MISSING — forcing a build"
+            { echo "miss=true"; echo "edition=$ED"; echo "today=$TODAY"; } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Force the missed edition
+        if: steps.check.outputs.miss == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run compass.yml -R "${GITHUB_REPOSITORY}" \
+            -f edition="${{ steps.check.outputs.edition }}" -f send=true -f force=true
+
+      - name: Say so
+        if: steps.check.outputs.miss == 'true'
+        continue-on-error: true
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+          ED: ${{ steps.check.outputs.edition }}
+          DAY: ${{ steps.check.outputs.today }}
+          REPO: ${{ github.repository }}
+        run: |
+          BODY=$(cat <<EOF
+          The $ED edition for $DAY had not shipped by the time its window closed,
+          so the watchdog forced a build. It should arrive within about ten minutes.
+
+          Run log: https://github.com/$REPO/actions
+          EOF
+          )
+          python scripts/alert.py "COMPASS $ED was late - shipping now" "$BODY"
+
+      # GitHub disables scheduled workflows after 60 days without repository
+      # activity. The last commit before this was 2026-08-04, which would have
+      # silently switched the crons off around 2026-10-03.
+      - name: Keepalive
+        if: steps.check.outputs.miss == 'false'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          TODAY=$(date -u +%F)
+          echo "$TODAY" > .keepalive
+          if [ -n "$(git status --porcelain .keepalive)" ]; then
+            LAST=$(git log -1 --format=%cd --date=format:%Y-%m -- .keepalive || echo "")
+            if [ "$LAST" != "$(date -u +%Y-%m)" ]; then
+              git config user.name  "compass-watchdog"
+              git config user.email "actions@github.com"
+              git add .keepalive
+              git commit -m "Keepalive: scheduled workflows stay enabled"
+              git push
+            fi
+          fi
