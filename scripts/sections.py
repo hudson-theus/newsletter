@@ -33,6 +33,8 @@ TRACKED = {
     "MAVERICKS":         ["sports"],
     "COWBOYS & NFL":     ["sports"],
     "DALLAS / TEXAS":    ["dallas"],
+    "FOOD & DRINK":      ["food"],
+    "GOING OUT":         ["goingout"],
     "WORTH READING":     ["read"],
 }
 

@@ -180,10 +180,29 @@ two that matter most and let the rest go.
 
 ### Dallas / Texas
 
-Three to five items. Dallas first, then DFW, then statewide. City and county
-government, local business and development, transit and infrastructure, the local
-economy, notable local stories. A Dallas item large enough to be national news
-belongs in United States instead, not in both.
+Five to eight items across three blocks. The first is news; the other two are not.
+Everything else in the issue answers *what happened* — these answer *what could I
+actually do*.
+
+**News** — two or three items. Dallas first, then DFW, then statewide. City and
+county government, local business and development, transit and infrastructure, the
+local economy, notable local stories. A Dallas item large enough to be national
+news belongs in United States instead, not in both.
+
+**Food & Drink** — one to three items. New and notable restaurant openings, chefs
+worth knowing, bars, and the occasional list worth acting on. The reader eats out
+and wants to know where to go. Always name the neighbourhood. Restaurant *industry*
+news is not this: a chain's quarterly numbers belong in Deal Flow.
+
+**Going Out** — one to three items. Concerts, club nights, electronic and EDM
+shows, festivals, and things outdoors or in nature. Anything worth leaving the
+house for. Prefer what is still ahead of him over a review of what already
+happened, and say when it is. A statewide outdoors trip counts; a generic travel
+puff piece does not.
+
+The last two blocks are the one place in the issue where a non-news item is
+correct. They still get the same bar: something he would be worse off not knowing
+about. Do not pad them, and do not turn them into a listings dump.
 
 ### Sports
 

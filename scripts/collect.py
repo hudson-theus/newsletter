@@ -39,6 +39,52 @@ from zoneinfo import ZoneInfo
 CT = ZoneInfo("America/Chicago")
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+HDRS = {"User-Agent": UA, "Accept-Encoding": "gzip, deflate"}
+
+# Extension namespaces that feeds routinely *use* without declaring. D Magazine
+# emits <media:content> with no xmlns:media, which is malformed XML and made the
+# whole feed unreadable; injecting the declaration recovers it. Only well-known
+# prefixes are ever patched, so this cannot invent structure that was not there.
+NS_FIX = {
+    "media":   "http://search.yahoo.com/mrss/",
+    "content": "http://purl.org/rss/1.0/modules/content/",
+    "dc":      "http://purl.org/dc/elements/1.1/",
+    "atom":    "http://www.w3.org/2005/Atom",
+    "wfw":     "http://wellformedweb.org/CommentAPI/",
+    "slash":   "http://purl.org/rss/1.0/modules/slash/",
+    "sy":      "http://purl.org/rss/1.0/modules/syndication/",
+    "georss":  "http://www.georss.org/georss/",
+}
+
+
+def _decompress(raw: bytes, encoding: str) -> bytes:
+    if encoding == "gzip" or raw[:2] == b"\x1f\x8b":
+        try:
+            return gzip.decompress(raw)
+        except Exception:
+            pass
+    if encoding == "deflate":
+        for wbits in (-zlib.MAX_WBITS, zlib.MAX_WBITS):
+            try:
+                return zlib.decompress(raw, wbits)
+            except Exception:
+                pass
+    return raw
+
+
+def _repair_ns(raw: bytes) -> bytes:
+    """Declare any well-known prefix the feed uses but never declared."""
+    txt = raw.decode("utf-8", "ignore")
+    used = set(re.findall(r"<(\w+):", txt))
+    declared = set(re.findall(r"xmlns:(\w+)=", txt))
+    missing = [p for p in sorted(used - declared) if p in NS_FIX]
+    if not missing:
+        return raw
+    m = re.search(r"<rss\b[^>]*|<feed\b[^>]*", txt)
+    if not m:
+        return raw
+    ins = " ".join(f'xmlns:{p}="{NS_FIX[p]}"' for p in missing)
+    return (txt[:m.end()] + " " + ins + txt[m.end():]).encode("utf-8")
 
 # (section, source tag, feed url). Tags become the [XX] label in the rendered issue.
 # CNBC, Axios, The Real Deal and Connect CRE all hard-403 a normal page fetch but
@@ -78,6 +124,20 @@ FEEDS = [
     ("dallas",    "Texas Tribune",      "https://www.texastribune.org/feeds/main/"),
     ("dallas",    "Dallas Innovates",      "https://dallasinnovates.com/feed/"),
     ("dallas",    "Texas Monthly",      "https://www.texasmonthly.com/feed/"),
+    ("dallas",    "Free Press",  "https://dallasfreepress.com/feed/"),
+
+    # ---- DALLAS FOOD & GOING OUT --------------------------------------------
+    # Restaurants worth going to, shows worth leaving the house for, and the
+    # outdoors. CultureMap 404s on every path, Central Track has been abandoned
+    # since 2022 and Do214 returns 406. Dallas Observer ignores its own
+    # ?section= parameter -- restaurants, music and calendar all return the
+    # identical feed -- so its single feed above already carries food and music.
+    # D Magazine emits <media:content> without declaring xmlns:media, which is
+    # malformed XML; _repair_ns is what makes it readable at all.
+    ("food",      "Eater",       "https://dallas.eater.com/rss/index.xml"),
+    ("food",      "D Magazine",  "https://www.dmagazine.com/feed/"),
+    ("goingout",  "EDM Tunes",   "https://www.edmtunes.com/feed/"),
+    ("goingout",  "Texas Highways", "https://texashighways.com/feed/"),
 
     # ---- SPORTS -------------------------------------------------------------
     # Cowboys, NFL, Mavericks, UVA football and basketball. Nothing else.
@@ -173,7 +233,7 @@ def _slug_title(url: str) -> str:
 
 def fetch_sitemap(entry: tuple[str, str, str]) -> list[dict]:
     section, tag, url = entry
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    req = urllib.request.Request(url, headers=HDRS)
     root = None
     for attempt, timeout in ((1, 25), (2, 40), (3, 60)):
         try:
@@ -245,7 +305,12 @@ def fetch(entry: tuple[str, str, str]) -> list[dict]:
     for attempt, timeout in ((1, 25), (2, 40), (3, 60)):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                root = ET.fromstring(r.read())
+                raw = _decompress(r.read(),
+                                  (r.headers.get("Content-Encoding") or "").lower())
+            try:
+                root = ET.fromstring(raw)
+            except ET.ParseError:
+                root = ET.fromstring(_repair_ns(raw))
             break
         except Exception as e:
             if attempt == 3:
@@ -293,7 +358,8 @@ PM_RUN = (13, 45)
 SLOW = {"read": dt.timedelta(days=6), "sports": dt.timedelta(days=3),
         "dallas": dt.timedelta(days=2), "cre": dt.timedelta(days=2),
         "ipo": dt.timedelta(days=3), "retail": dt.timedelta(days=2),
-        "uva": dt.timedelta(days=4)}
+        "uva": dt.timedelta(days=4), "food": dt.timedelta(days=4),
+        "goingout": dt.timedelta(days=5)}
 
 # Per-section cap, applied newest-first after the date filter. Uncapped, the
 # lookback windows above produce ~580 candidates, three quarters of them sports,
@@ -302,7 +368,7 @@ SLOW = {"read": dt.timedelta(days=6), "sports": dt.timedelta(days=3),
 # Each cap is roughly 4-5x what the section actually ships.
 SECTION_CAP = {"economy": 25, "us": 25, "world": 35, "dallas": 20, "sports": 25,
                "cre": 35, "retail": 15, "vc": 35, "ipo": 20, "deals": 25,
-               "read": 20, "uva": 15}
+               "read": 20, "uva": 15, "food": 15, "goingout": 15}
 
 
 def window_start(edition: str, now: dt.datetime) -> dt.datetime:

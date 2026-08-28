@@ -28,12 +28,36 @@ Eleven sections, this order, every issue:
 | 6 | AI &amp; ENTERPRISE | 6–8 | written for a builder |
 | 7 | UNITED STATES | 4–6 | national, non-economic |
 | 8 | THE WORLD | 5–7 | **3+ regions, genuinely non-US** |
-| 9 | DALLAS / TEXAS | 3–5 | Dallas first, then DFW, then statewide |
+| 9 | DALLAS / TEXAS | 5–8 | `NEWS` · `FOOD &amp; DRINK` · `GOING OUT` |
 | 10 | SPORTS | 3–5 | `COWBOYS &amp; NFL` · `MAVERICKS` · `VIRGINIA` |
 | 11 | WORTH READING | 3–4 | arguments and explainers, never news reports |
 
 Omit any section or subsection with no real items rather than padding it. Omitting
 is correct behaviour and is reported, not penalised.
+
+## Dallas / Texas
+
+Three blocks, and the last two are not news — they are things the reader might
+actually do this week.
+
+- `NEWS` — Dallas first, then DFW, then statewide. 2–3 items.
+- `FOOD &amp; DRINK` — new and notable restaurant openings, chefs, bars, and the
+  occasional list worth acting on. He goes out to eat and wants to know where.
+  Name the neighbourhood. 1–3 items.
+- `GOING OUT` — concerts, club nights, electronic and EDM shows, festivals, and
+  things outdoors or in nature. Anything worth leaving the house for. Prefer items
+  that are still ahead of him rather than reviews of what already happened, and
+  say when it is. 1–3 items.
+
+Candidate sections `food` and `goingout` feed the last two. EDM Tunes is national
+rather than Dallas — use it only when an artist is actually touring through DFW or
+the release genuinely matters to someone who follows the genre. Texas Highways is
+statewide outdoors; a good weekend trip counts, a general travel puff piece does not.
+
+The `FOOD &amp; DRINK` and `GOING OUT` blocks are the one place a non-news item is
+correct. Everything else in the issue answers "what happened"; these answer "what
+could I do". Do not fill them with restaurant-industry business news — a chain's
+quarterly numbers belong in Deal Flow, not here.
 
 ## Sections that have gone dark
 
@@ -123,7 +147,11 @@ Write `issue.json` and nothing else. Shape:
     {"title": "AI &amp; ENTERPRISE", "blocks": [{"label": null, "items": [...]}]},
     {"title": "UNITED STATES", "blocks": [{"label": null, "items": [...]}]},
     {"title": "THE WORLD", "blocks": [{"label": null, "items": [...]}]},
-    {"title": "DALLAS / TEXAS", "blocks": [{"label": null, "items": [...]}]},
+    {"title": "DALLAS / TEXAS", "blocks": [
+      {"label": "NEWS", "items": [...]},
+      {"label": "FOOD &amp; DRINK", "items": [...]},
+      {"label": "GOING OUT", "items": [...]}
+    ]},
     {"title": "SPORTS", "blocks": [
       {"label": "COWBOYS &amp; NFL", "items": [...]},
       {"label": "MAVERICKS", "items": [...]},
