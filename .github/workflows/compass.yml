@@ -222,10 +222,14 @@ jobs:
             --send-at "${{ steps.cfg.outputs.at }}" \
             ${{ steps.cfg.outputs.send }}
 
-      # Only on full success — this artifact is the "already shipped" marker, so a
-      # partial run must not leave one behind or the next slot won't retry.
+      # Only on full success AND only when this run actually sent. The artifact is
+      # the "already shipped" marker every other trigger stands down on, so a
+      # partial run must not leave one behind or the next slot won't retry — and a
+      # send=false dry run must not leave one either, or it silently cancels the
+      # real edition. A dry run wrote one on 2026-08-28 and only escaped doing harm
+      # because that morning's edition had already gone out.
       - name: Mark shipped
-        if: success() && steps.cfg.outputs.skip == 'false'
+        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.cfg.outputs.artifact }}
