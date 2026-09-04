@@ -151,8 +151,20 @@ jobs:
       # On 2026-08-27 it died in 423ms on an auth rejection and took the whole
       # afternoon edition with it. Three attempts, then a deterministic fallback,
       # so a transient failure can no longer produce zero email.
+      #
+      # Every attempt is capped, because a hang is as damaging as a failure and
+      # the ladder cannot react to one. On 2026-09-04 attempt 1 ran 44 minutes
+      # before reporting is_error; attempt 2 then produced a clean issue in 12,
+      # but 09:00 CT had passed and the edition went out 15 minutes late. The job
+      # timeout is 120 minutes and never applied. A healthy curate measures
+      # 10-12 minutes, so 15 is generous; 15 + 60s + 15 + 180s + 8 = 42 minutes,
+      # which still fits inside the 45-minute sweep lead with collection's ~2.5
+      # minutes ahead of it. Even three timed-out attempts now reach fallback.py
+      # in time to send on the minute. A timed-out step reports outcome
+      # 'failure', so the existing retry gates below pick it up unchanged.
       - name: Curate issue (attempt 1)
         id: curate1
+        timeout-minutes: 15
         if: steps.cfg.outputs.skip == 'false'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
@@ -171,6 +183,7 @@ jobs:
 
       - name: Curate issue (attempt 2)
         id: curate2
+        timeout-minutes: 15
         if: steps.cfg.outputs.skip == 'false' && steps.curate1.outcome == 'failure'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
@@ -189,6 +202,7 @@ jobs:
 
       - name: Curate issue (attempt 3)
         id: curate3
+        timeout-minutes: 8
         if: steps.cfg.outputs.skip == 'false' && steps.curate2.outcome == 'failure'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
@@ -253,9 +267,20 @@ jobs:
       # commit is also what keeps the repo active: GitHub disables scheduled
       # workflows after 60 days without a push, which would have silently killed
       # the cron backstop around 2026-10-03.
+      #
+      # The push names its remote explicitly rather than relying on the checkout
+      # credential, which is no longer valid by the time this step runs:
+      # claude-code-action replaces the stored auth header with its own GitHub
+      # App token and revokes that token in a post-step. Every edition from
+      # 2026-08-28 onward committed and then failed to push with "Invalid
+      # username or token", swallowed by continue-on-error, so state/sections.json
+      # sat a week stale and the keepalive silently stopped. GITHUB_TOKEN carries
+      # the contents:write granted above and is unaffected by the revocation.
       - name: Record section coverage
         if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != ''
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python scripts/sections.py --record
@@ -264,7 +289,8 @@ jobs:
             git config user.email "compass-bot@users.noreply.github.com"
             git add state/sections.json
             git commit -m "state: section coverage after ${{ steps.cfg.outputs.edition }} $(date -u +%F)"
-            git push
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+              "HEAD:${{ github.ref_name }}"
           else
             echo "no coverage change to record"
           fi
