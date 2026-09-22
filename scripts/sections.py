@@ -21,6 +21,7 @@ import argparse
 import html
 import json
 import os
+import re
 
 STATE = "state/sections.json"
 
@@ -36,6 +37,15 @@ TRACKED = {
     "FOOD & DRINK":      ["food"],
     "GOING OUT":         ["goingout"],
     "WORTH READING":     ["read"],
+}
+
+# Blocks that share a broad feeder with busier ones. "sports" always carries NFL
+# stories, so counting the whole section said the Mavericks had material every
+# single run — and after nine dark editions the curator would be REQUIRED to ship
+# a Mavericks item in the middle of the offseason, from nothing but other teams'
+# news. For these, supply counts only candidates whose title actually names them.
+MATCH = {
+    "MAVERICKS": re.compile(r"\bmav(ericks|s)\b", re.I),
 }
 
 # Editions dark before the bar moves. Roughly: NUDGE is four days of mornings,
@@ -68,7 +78,12 @@ def prep(cand_path: str) -> None:
         dark = int(st.get("dark", {}).get(block, 0))
         if dark < NUDGE:
             continue
-        supply = sum(have.get(f, 0) for f in feeders)
+        if block in MATCH:
+            supply = sum(1 for it in cand.get("items", [])
+                         if it.get("section") in feeders
+                         and MATCH[block].search(it.get("title", "")))
+        else:
+            supply = sum(have.get(f, 0) for f in feeders)
         if supply == 0:
             # Nothing to work with. Not the curator's problem this run.
             print(f"  {block}: dark {dark} editions but no candidates — skipping")
