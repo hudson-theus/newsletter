@@ -22,8 +22,8 @@ import sys
 # (section title, subsection label or None, candidate section keys, max items)
 LAYOUT = [
     ("THE ECONOMY",        None,                       ["economy"],          6),
-    ("CRE SNAPSHOT",       None,                       ["cre"],              4),
-    ("CRE DESK",           "RETAIL",                   ["retail"],           4),
+    ("CRE SNAPSHOT",       None,                       ["cre"],              2),
+    ("CRE DESK",           "RETAIL",                   ["retail"],           2),
     ("DEAL FLOW",          "VC",                       ["vc"],              12),
     ("DEAL FLOW",          "IPOS &amp; LISTINGS",      ["ipo"],              6),
     ("DEAL FLOW",          "M&amp;A / STRATEGIC",      ["deals"],            8),

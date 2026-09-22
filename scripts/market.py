@@ -7,6 +7,11 @@ the CRE wires carry three shopping-center trades and nothing about the state of
 the market. Numbers are always available and always say something.
 
 Everything here is free and keyless:
+  - Nasdaq's public quote API for SPY: today's minute-by-minute tape, which draws
+    the cover chart, plus a year of daily closes for the weekly move and realised
+    vol. Yahoo's chart API was the obvious choice and
+    answers 429 to scripted clients; Stooq now serves a JS challenge. Verified
+    2026-09-22.
   - Treasury.gov daily yield curve XML. The 10Y is the number that sets what the
     reader's clients' buyers can borrow at, so it leads. Verified 2026-08-27.
   - Freddie Mac PMMS weekly mortgage survey, as the housing-side read.
@@ -21,10 +26,12 @@ Writes market.json for the curation stage.
 """
 
 import concurrent.futures as futures
+import zoneinfo
 import csv
 import datetime as dt
 import io
 import json
+import statistics
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -105,6 +112,115 @@ def freddie() -> dict:
     return out
 
 
+def _nasdaq(path: str) -> dict:
+    req = urllib.request.Request(
+        f"https://api.nasdaq.com/api/quote/SPY/{path}",
+        headers={"User-Agent": UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return json.load(r)["data"]
+
+
+def _num(s) -> float:
+    return float(str(s).replace("$", "").replace(",", "").replace("%", ""))
+
+
+def spy() -> dict:
+    """A year of SPY daily closes, with the live quote as the newest point.
+
+    The historical table lags a session — at 5pm ET it still ends at yesterday's
+    close — so the live quote is appended whenever it is newer. Both editions run
+    while the market is open, so the last point is the price as the reader wakes
+    up to it, not yesterday's.
+    """
+    today = dt.date.today()
+    hist = _nasdaq(f"historical?assetclass=etf&fromdate={today.replace(year=today.year - 1)}"
+                   f"&todate={today}&limit=400")
+    rows = hist["tradesTable"]["rows"]
+    ser = sorted(
+        [dt.datetime.strptime(r["date"], "%m/%d/%Y").date().isoformat(), _num(r["close"])]
+        for r in rows)
+    if not ser:
+        return {}
+    try:
+        q = _nasdaq("info?assetclass=etf")["primaryData"]
+        when = dt.datetime.strptime(q["lastTradeTimestamp"].split(" ET")[0].strip(),
+                                    "%b %d, %Y %I:%M %p").date().isoformat()
+        px = _num(q["lastSalePrice"])
+        if when > ser[-1][0]:
+            ser.append([when, px])
+        elif when == ser[-1][0]:
+            ser[-1][1] = px
+    except Exception as e:
+        print(f"  spy live quote: unavailable ({type(e).__name__}) — using last close")
+
+    closes = [v for _, v in ser]
+    out = {"spy": round(closes[-1], 2), "spy_as_of": ser[-1][0], "spy_series": ser}
+    if len(closes) >= 2:
+        out["spy_day_pct"] = round((closes[-1] / closes[-2] - 1) * 100, 2)
+    if len(closes) >= 6:
+        # Five sessions back is a week of trading, same convention as the 10Y.
+        out["spy_wk_pct"] = round((closes[-1] / closes[-6] - 1) * 100, 2)
+    rets = [(b / a - 1) * 100 for a, b in zip(closes[-31:], closes[-30:])]
+    if len(rets) >= 8:
+        out["spy_vol_pct"] = round(statistics.pstdev(rets), 3)
+    return out
+
+
+NY = zoneinfo.ZoneInfo("America/New_York")
+
+
+def spy_intraday() -> dict:
+    """Today's SPY tape — or the last session's, on a weekend or holiday.
+
+    Nasdaq returns one point a minute from the 4:00am ET pre-market onward. Five-
+    minute buckets are plenty for a 550px chart and keep market.json small, which
+    matters because the curator reads the whole file. publish.py calls this again
+    just before the send so each edition's chart runs as late as it can: the
+    morning one is the pre-market and the open, the afternoon one most of the day.
+    """
+    d = _nasdaq("chart?assetclass=etf")
+    pts = [(int(p["x"]), float(p["y"])) for p in d.get("chart") or []
+           if p.get("x") is not None and p.get("y") is not None]
+    if len(pts) < 2:
+        return {}
+    # Points are stored as milliseconds of ET wall-clock time, read as if UTC, so
+    # art.py can place 09:30 without a timezone library. Nasdaq's x has been seen
+    # both ways, so check a point against its own label rather than trusting it.
+    lab = (d["chart"][0].get("z") or {}).get("dateTime", "")
+    naive = dt.datetime.fromtimestamp(pts[0][0] / 1000, dt.timezone.utc)
+    shift = 0
+    if lab and naive.strftime("%-I:%M %p") != lab.replace(" ET", ""):
+        shift = int(naive.astimezone(NY).utcoffset().total_seconds() * 1000)
+    buckets: dict[int, tuple[int, float]] = {}
+    for x, y in pts:
+        x += shift
+        buckets[x // 300_000] = (x, y)           # last print in each 5 minutes
+    ser = [[x, round(y, 3)] for x, y in sorted(buckets.values())]
+    out = {"spy_intraday": ser,
+           "spy_session": dt.datetime.fromtimestamp(ser[-1][0] / 1000,
+                                                    dt.timezone.utc).date().isoformat()}
+    out["spy"] = ser[-1][1]
+    return out
+
+
+def settle_spy(out: dict) -> None:
+    """Derive the day's move once both SPY reads are in.
+
+    The chart endpoint's own previousClose is not trustworthy — on 2026-09-22 it
+    reported 761.69 against a real prior close of 773.50, which would have printed
+    a flat day as +1.5%. The prior close comes from the daily history instead:
+    the last close dated before the session being charted.
+    """
+    daily = out.get("spy_series") or []
+    sess = out.get("spy_session")
+    if sess:
+        prior = [v for d, v in daily if d < sess]
+        if prior:
+            out["spy_prev_close"] = prior[-1]
+    if out.get("spy") is not None and out.get("spy_prev_close"):
+        out["spy_day_pct"] = round((out["spy"] / out["spy_prev_close"] - 1) * 100, 2)
+
+
 def fred(series: str) -> tuple[str, dict]:
     """One FRED series, latest observation plus the prior one."""
     try:
@@ -135,7 +251,8 @@ FRED_SERIES = {
 def main() -> None:
     out: dict = {"generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
 
-    for name, fn in (("treasury", treasury), ("freddie", freddie)):
+    for name, fn in (("treasury", treasury), ("freddie", freddie), ("spy", spy),
+                     ("spy intraday", spy_intraday)):
         try:
             out.update(fn())
             print(f"  {name}: ok")
@@ -147,7 +264,8 @@ def main() -> None:
             if data:
                 out[FRED_SERIES[sid]] = data
 
-    have = [k for k in ("y10", "mortgage30", "cre_delinquency_pct") if k in out]
+    settle_spy(out)
+    have = [k for k in ("y10", "mortgage30", "spy", "cre_delinquency_pct") if k in out]
     print(f"\nmarket.json: {len(out) - 1} fields, key series present: {have or 'NONE'}")
     with open("market.json", "w") as f:
         json.dump(out, f, indent=1)

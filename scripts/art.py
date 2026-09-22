@@ -16,15 +16,21 @@ Two rules govern every asset:
      caller drops that asset and ships the issue around it. Same contract as
      fallback.py: a plain brief beats no brief.
 
-The cover is not decoration. Its backdrop is bound to the day's numbers — the
-2s10s slope sets the angle of the field, realised vol sets its density, and the
-week's move in the 10Y warms or cools the accent. Two issues never look alike,
-and the difference is the market.
+The cover is not decoration. It charts SPY on the day — the morning edition
+carries the pre-market and the open, the afternoon one most of the session, on
+the same fixed 08:00-16:00 ET axis so the difference is visible at a glance.
+Its backdrop is bound to the day's numbers: the 2s10s slope sets the angle of
+the field, SPY's realised vol its density, and SPY's day warms or cools the
+accent. The bond read stays on the rail beside SPY, in the ticker, and in the
+10Y sparkline. With no intraday tape the cover falls back to a year of daily
+SPY closes, and without those to the 10Y, as it charted before.
 """
 
+import datetime as dt
 import io
 import math
 import statistics
+from zoneinfo import ZoneInfo
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -89,20 +95,64 @@ def _encode(frames, ms) -> bytes:
     return buf.getvalue()
 
 
+# Intraday axis, in minutes after midnight ET. Starting at 08:00 rather than the
+# 09:30 open is what gives the morning edition a chart at all: it is built around
+# 08:30 CT, when the only tape that exists is the pre-market.
+AX0, OPEN, AX1 = 8 * 60, 9 * 60 + 30, 16 * 60
+
+
+def _et_min(ms: int) -> float:
+    """market.py stores intraday points as ET wall-clock ms read as UTC."""
+    t = dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc)
+    return t.hour * 60 + t.minute + t.second / 60
+
+
 def _weather(market: dict) -> dict:
-    """Read the day's numbers into drawing parameters. Missing data is flat."""
-    ser = [v for _, v in market.get("y10_series") or []]
+    """Read the day's numbers into drawing parameters. Missing data is flat.
+
+    `pts` are (x, value) with x in 0..1 across the chart; `ref` is the level the
+    dashed reference line marks; `pre` is the x where the regular session opens
+    (everything left of it is pre-market and drawn dimmer), or None.
+    """
     curve = market.get("curve_2s10s_bps")
-    move = market.get("y10_wk_bps")
-    vol = statistics.pstdev(ser[-30:]) if len(ser) >= 8 else 0.06
+    intra = [(_et_min(x), v) for x, v in market.get("spy_intraday") or []]
+    intra = [(m, v) for m, v in intra if AX0 <= m <= AX1]
+    daily = [v for _, v in market.get("spy_series") or []]
+    vol = market.get("spy_vol_pct") or 0.8
+    gap = 27 - (vol - 0.4) * 8
+    warm = (market.get("spy_day_pct") or 0) / 1.2
+    if len(intra) >= 2:
+        sess = market.get("spy_session", "")
+        today = dt.datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+        when = "TODAY" if sess == today else (
+            dt.date.fromisoformat(sess).strftime("%a %b %-d").upper() if sess else "LAST SESSION")
+        pts = [((m - AX0) / (AX1 - AX0), v) for m, v in intra]
+        ref = market.get("spy_prev_close")
+        cap = f"SPY  ·  {when}  ·  ET"
+        pre = (OPEN - AX0) / (AX1 - AX0)
+    elif len(daily) >= 20:
+        pts = [(i / (len(daily) - 1), v) for i, v in enumerate(daily)]
+        ref = daily[-6]
+        cap = "SPY  ·  1Y DAILY"
+        pre = None
+        warm = (market.get("spy_wk_pct") or 0) / 3.0
+    else:
+        ser = [v for _, v in market.get("y10_series") or []]
+        pts = [(i / max(1, len(ser) - 1), v) for i, v in enumerate(ser)]
+        ref = ser[-6] if len(ser) >= 6 else None
+        cap = "US 10Y  ·  1Y DAILY"
+        pre = None
+        vol_ = statistics.pstdev(ser[-30:]) if len(ser) >= 8 else 0.06
+        gap = 27 - vol_ * 170
+        warm = (market.get("y10_wk_bps") or 0) / 22.0
     return {
-        "series": ser,
+        "pts": pts, "ref": ref, "cap": cap, "pre": pre,
         # steeper curve tilts the field up; inversion tilts it down
         "angle": math.radians(max(-9.0, min(23.0, ((curve if curve is not None else 40) + 50) / 200 * 32 - 9))),
         # more realised vol packs the hairlines tighter
-        "gap": int(max(11, min(27, 27 - vol * 170))),
-        # rates up runs the accent warm, rates down runs it cool
-        "warm": max(-1.0, min(1.0, (move or 0) / 22.0)),
+        "gap": int(max(11, min(27, gap))),
+        # an up day runs the accent warm, a down day runs it cool
+        "warm": max(-1.0, min(1.0, warm)),
     }
 
 
@@ -131,14 +181,17 @@ def cover(edition: str, market: dict, date: str, stamp: str,
                   min(0.34, abs(wx["warm"]) * 0.34))
     W, H, N = COVER[0] * SCALE, COVER[1] * SCALE, 26
     s = SCALE
-    ser = wx["series"] or []
-    lo, hi = (min(ser), max(ser)) if len(ser) > 1 else (0.0, 1.0)
-    if hi - lo < 1e-6:
-        hi = lo + 1.0
-    gx, gy, gw, gh = 34 * s, 128 * s, W - 68 * s, 96 * s
+    raw = wx["pts"]
+    vals = [v for _, v in raw] + ([wx["ref"]] if wx["ref"] is not None else [])
+    lo, hi = (min(vals), max(vals)) if len(vals) > 1 else (0.0, 1.0)
+    pad = (hi - lo) * 0.08 or 1.0
+    lo, hi = lo - pad, hi + pad
+    gx, gy, gw, gh = 34 * s, 126 * s, W - 68 * s, 82 * s
 
-    def pt(i, v):
-        return (gx + gw * i / max(1, len(ser) - 1), gy + gh - (v - lo) / (hi - lo) * gh)
+    def pt(x, v):
+        return (gx + gw * x, gy + gh - (v - lo) / (hi - lo) * gh)
+
+    GRID = (58, 58, 58)
 
     frames = []
     for f in range(N):
@@ -161,43 +214,89 @@ def cover(edition: str, market: dict, date: str, stamp: str,
         d.rectangle([34 * s, 96 * s, min(W - 34 * s, max(34 * s, sweep)), 101 * s],
                     fill=accent)
 
-        if len(ser) > 1:
-            wk = ser[-6] if len(ser) >= 6 else ser[0]
-            yw = pt(0, wk)[1]
-            d.line([(gx, yw), (gx + gw, yw)], fill=(52, 52, 52), width=1)
-            pts = [pt(i, v) for i, v in enumerate(ser)]
+        fc = font(9 * s, True)
+        d.text((34 * s, 109 * s), wx["cap"], font=fc, fill=DIM)
+
+        if len(raw) > 1:
+            if wx["pre"] is not None:
+                # the session frame: open marked, hours along the floor, so a
+                # morning line visibly stops a quarter of the way across
+                for hh in (8, 10, 12, 14, 16):
+                    x = gx + gw * (hh * 60 - AX0) / (AX1 - AX0)
+                    lab = f"{hh if hh <= 12 else hh - 12}{'A' if hh < 12 else 'P'}"
+                    d.text((min(x, gx + gw - d.textlength(lab, font=fc)), gy + gh + 5 * s),
+                           lab, font=fc, fill=(80, 80, 80))
+                xo = gx + gw * wx["pre"]
+                for yy in range(int(gy), int(gy + gh), 6 * s):
+                    d.line([(xo, yy), (xo, yy + 2 * s)], fill=GRID, width=1)
+            if wx["ref"] is not None:
+                # dashed: yesterday's close intraday, a week ago on a daily chart
+                yr = pt(0, wx["ref"])[1]
+                for xx in range(int(gx), int(gx + gw), 8 * s):
+                    d.line([(xx, yr), (xx + 4 * s, yr)], fill=GRID, width=1)
+            pts = [pt(x, v) for x, v in raw]
+            pre = [p for (x, _), p in zip(raw, pts) if wx["pre"] is not None and x <= wx["pre"]]
             d.line(pts, fill=_mix(accent, BG, 0.28), width=2 * s, joint="curve")
             lit = [p for p in pts if p[0] <= sweep]
             if len(lit) > 1:
                 d.line(lit, fill=accent, width=2 * s, joint="curve")
+            if len(pre) > 1:
+                d.line(pre, fill=_mix(DIM, BG, 0.2), width=2 * s, joint="curve")
             hx, hy = pts[-1]
             r = (3.4 + 1.5 * math.sin(ph * math.tau)) * s
             d.ellipse([hx - r, hy - r, hx + r, hy + r], fill=INK)
 
-        # standing rail — the numbers, the name, the issue
-        d.text((34 * s, 232 * s), "US 10Y", font=font(11 * s, True), fill=DIM)
+        # standing rail — SPY, the 10Y beside it, the name, the issue. Each
+        # figure's weekly move sits on its label line so the big numbers never
+        # run into the right-hand rail.
+        figs = []
+        if market.get("spy") is not None:
+            day = market.get("spy_day_pct")
+            figs.append(("SPY", f"{market['spy']:.2f}",
+                         f"{day:+.2f}% today" if day is not None else ""))
         cur = market.get("y10")
-        d.text((34 * s, 248 * s), f"{cur:.2f}%" if cur is not None else "—",
-               font=font(30 * s, True), fill=INK)
         bps = market.get("y10_wk_bps")
-        if bps is not None:
-            d.text((132 * s, 258 * s), f"{bps:+d}bp / wk", font=font(12 * s), fill=accent)
+        figs.append(("US 10Y", f"{cur:.2f}%" if cur is not None else "—",
+                     f"{bps:+d}bp / wk" if bps is not None else ""))
+        x = 34 * s
+        fl, fb, fm = font(11 * s, True), font(30 * s, True), font(11 * s)
+        for lab, big, chg in figs:
+            d.text((x, 239 * s), lab, font=fl, fill=DIM)
+            if chg:
+                d.text((x + d.textlength(lab, font=fl) + 8 * s, 239 * s), chg,
+                       font=fm, fill=accent)
+            d.text((x, 255 * s), big, font=fb, fill=INK)
+            x += max(d.textlength(big, font=fb),
+                     d.textlength(lab, font=fl) + 8 * s + d.textlength(chg, font=fm)) + 30 * s
         rail = f"{t['label']}  ·  NO {issue_no}"
         fr = font(11 * s, True)
-        d.text((W - 34 * s - d.textlength(rail, font=fr), 232 * s), rail, font=fr, fill=accent)
+        d.text((W - 34 * s - d.textlength(rail, font=fr), 239 * s), rail, font=fr, fill=accent)
         who = f"PREPARED FOR {name.upper()}"
         fw = font(11 * s, True)
-        d.text((W - 34 * s - d.textlength(who, font=fw), 252 * s), who, font=fw, fill=DIM)
+        d.text((W - 34 * s - d.textlength(who, font=fw), 258 * s), who, font=fw, fill=DIM)
         frames.append(im)
     return _encode(frames, 70)
 
 
+# The crawl used to run continuously at ~280px/s: the whole strip passed in 1.8s
+# and nothing on it could be read. A continuous crawl slow enough to read (~35px/s)
+# needs ~230 full-width frames and weighed 1.2 MB. So it steps instead: the strip
+# holds still for HOLD_MS, then glides one figure left over GLIDE frames. A hold
+# is a single GIF frame with a long delay, so reading time costs no bytes.
+HOLD_MS = 2400
+GLIDE, GLIDE_MS = 9, 45
+
+
 def ticker(edition: str, market: dict) -> bytes | None:
-    """A seamless crawl of the day's real numbers."""
+    """The day's real numbers, stepping one figure at a time at reading pace."""
     t = TH[edition]
     s = SCALE
-    W, H, N = COVER[0] * s, 26 * s, 30
+    W, H = COVER[0] * s, 26 * s
     cells = []
+    if market.get("spy") is not None:
+        day = market.get("spy_day_pct")
+        cells.append(("SPY", f"{market['spy']:.2f}"
+                      + (f" {day:+.2f}%" if day is not None else "")))
     for key, lab, fmt in (("y2", "2Y", "{:.2f}%"), ("y10", "10Y", "{:.2f}%"),
                           ("y30", "30Y", "{:.2f}%"),
                           ("curve_2s10s_bps", "2s10s", "{:+d}bp"),
@@ -214,12 +313,22 @@ def ticker(edition: str, market: dict) -> bytes | None:
         w = probe.textlength(lab, font=fo) + 8 * s + probe.textlength(val, font=fv) + 34 * s
         widths.append(w)
         seg += w
+    # one stop per figure; the last glide lands on -seg, which is the first stop
+    # again, so the loop seam is invisible
+    stops = [14.0 * s]                  # a margin, so a held figure never kisses the edge
+    for w in widths:
+        stops.append(stops[-1] - w)
+    offs, ms = [], []
+    for k in range(len(cells)):
+        offs.append(stops[k]); ms.append(HOLD_MS)
+        for g in range(1, GLIDE):
+            e = 0.5 - 0.5 * math.cos(g / GLIDE * math.pi)      # ease in-out
+            offs.append(stops[k] + (stops[k + 1] - stops[k]) * e); ms.append(GLIDE_MS)
 
     frames = []
-    for f in range(N):
+    for off in offs:
         im = Image.new("RGB", (W, H), BG)
         d = ImageDraw.Draw(im)
-        off = -(f / N) * seg
         while off < W:
             x = off
             for (lab, val), w in zip(cells, widths):
@@ -230,7 +339,7 @@ def ticker(edition: str, market: dict) -> bytes | None:
                 x += w
             off += seg
         frames.append(im)
-    return _encode(frames, 60)
+    return _encode(frames, ms)
 
 
 def marker(edition: str) -> bytes | None:

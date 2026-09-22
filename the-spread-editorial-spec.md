@@ -97,26 +97,35 @@ the market. Numbers are always available; deals are not.
 
 Opens with a **numbers line** built from `market.json`, which is collected
 deterministically before the model runs. Always leads with the 10Y, because that is
-the number that sets what the reader's clients' buyers can borrow at. Then the
-curve, then the mortgage rate, then whichever slower series are present.
+the number that sets what the reader's clients' buyers can borrow at — and stops
+there unless the mortgage rate or a slower series moved enough to matter. The
+full rate path lives in The Economy.
 
-Follows with **two to four sentences of direction**: where cap rates are heading,
-where distress is concentrated, what is refinancing and at what cost, what the
-lending market is doing. Written from the CRE wires and Trepp's CMBS commentary.
+**Kept short — at most two items after the numbers line** (2026-09-22: the reader
+found most Snapshot items not useful). The numbers line is one sentence on what
+rates mean for CRE borrowing and does not repeat The Economy's rate path. Items
+are market-level only: where cap rates are heading, where distress is
+concentrated, what is refinancing and at what cost, what the lending market is
+doing, and anything specific to retail property or DFW. The bar for every item:
+would a retail broker in Dallas bring this up with a client this week? Single
+office leases, lawsuits, one lender's growth, and data-center stories that do
+not touch retail or Texas fail it.
 
 Never list an individual property sale here. If `market.json` is missing a series,
 omit that number silently — never estimate one, never carry a stale figure forward.
 
 ### CRE Desk
 
-Six items, in two subsections. Deliberately half its former size.
+**At most three items in total** (2026-09-22, halved again). Omit a block, or
+the whole section, when nothing clears the bar.
 
-- **Retail** — tenant expansion and closures, leasing trends, consumer demand
-  signals, anything a retail brokerage would be discussing with a client. Tenant
-  and demand news only; retail *investment sales* belong nowhere in this issue.
-- **Proptech & CRE-Tech** — funding rounds, product launches, competitor moves.
-  Include small rounds. A $7M seed is the competitive landscape, and this is the
-  reader's own industry.
+- **Retail**, 0–2 — store openings, closures and anchor-tenant moves that change
+  a retail landlord's picture, Texas and DFW first. Not brand sales targets,
+  category trends, wage news, or earnings that say nothing about store counts.
+  Retail *investment sales* belong nowhere in this issue.
+- **Proptech & CRE-Tech**, 0–1 — a CRE-software company's funding round, product
+  launch, or competitor move. Small rounds count; a $7M seed is the reader's own
+  competitive landscape. AI companies leasing office space are not proptech.
 
 **Capital Markets has been removed as a standing subsection.** It was where the
 individual acquisitions lived. Anything genuinely structural that would have gone

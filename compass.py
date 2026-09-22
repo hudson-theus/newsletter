@@ -20,7 +20,7 @@ TH = {
 }
 
 
-def head(ed, date, stamp, issue_no, cover=None, ticker=None, y10=None):
+def head(ed, date, stamp, issue_no, cover=None, ticker=None, y10=None, spy=None):
     """The cover, then the crawl, then the dateline rail."""
     t = TH[ed]
     rows = []
@@ -28,6 +28,8 @@ def head(ed, date, stamp, issue_no, cover=None, ticker=None, y10=None):
         # Alt text carries the masthead for anyone with images off — it is the
         # only place the wordmark exists once the cover is an image.
         alt = f"COMPASS — {t['label']} No {issue_no}"
+        if spy is not None:
+            alt += f" — SPY {spy:.2f}"
         if y10 is not None:
             alt += f" — US 10Y {y10:.2f}%"
         rows.append(
