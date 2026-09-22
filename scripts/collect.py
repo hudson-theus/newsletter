@@ -22,15 +22,26 @@ those sections could not exist. The hint is a routing aid for the curator, not a
 binding assignment — a Dallas story big enough for the front page still belongs
 there.
 
+Nothing ships twice across days. The slow sections look back two to six days
+(see SLOW) so they have something to choose from, and nothing used to remember
+what had already gone out — over 2026-09-16..22, 50 links shipped on more than
+one day, some in four editions running. The workflow now drops the previous
+days' shipped issues into prior/, and anything whose link or headline shipped on
+an earlier day is removed here, before the curator ever sees it. A morning item
+may still reappear that afternoon: same-day repeats are allowed on purpose.
+
 Writes candidates.json for the curation stage.
 """
 
 import argparse
 import concurrent.futures as futures
 import datetime as dt
+import glob
 import gzip
 import json
+import os
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -385,10 +396,88 @@ def window_start(edition: str, now: dt.datetime) -> dt.datetime:
     return y.replace(hour=h, minute=m, second=0, microsecond=0)
 
 
+def url_key(url: str) -> str:
+    """Same article, different spelling: scheme, www, trailing slash, fragment and
+    tracking parameters vary between feeds. Real query parameters are kept —
+    Hacker News links are nothing but ?id=."""
+    u = urllib.parse.urlsplit(url.strip())
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True)
+         if not k.lower().startswith(("utm_", "cmp", "mc_", "fbclid", "gclid", "__source"))]
+    host = u.netloc.lower().removeprefix("www.")
+    return f"{host}{u.path.rstrip('/')}?{urllib.parse.urlencode(q)}".rstrip("?")
+
+
+def title_key(title: str) -> str | None:
+    """Syndicated copies of one story share a headline under different URLs. Short
+    headlines are skipped — "Morning Briefing" recurs without being a repeat."""
+    t = re.sub(r"[^a-z0-9 ]", "", _clean(title).lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    return t if len(t) >= 30 and t.count(" ") >= 5 else None
+
+
+def load_shipped(prior_dir: str, today: str) -> tuple[set, set, list]:
+    """URL keys and headline keys of every item shipped on an EARLIER day, plus
+    the recent headlines themselves for the curator's story-level check.
+
+    prior/<compass-ed-YYYY-MM-DD>-<id>/ holds each edition's issue.json and the
+    candidates.json it was built from. The issue carries the curator's rewritten
+    text, so the original headline is recovered from the candidates by URL.
+    Artifacts are kept 7 days, which covers the longest SLOW lookback (6 days).
+    """
+    urls, titles, recent = set(), set(), []
+    for path in sorted(glob.glob(os.path.join(prior_dir, "compass-*", "issue.json"))):
+        name = os.path.basename(os.path.dirname(path))
+        m = re.match(r"compass-(am|pm)-(\d{4}-\d{2}-\d{2})", name)
+        if not m or m.group(2) >= today:
+            continue            # today's morning edition is allowed to repeat
+        try:
+            issue = json.load(open(path))
+            cpath = os.path.join(os.path.dirname(path), "candidates.json")
+            heads = {c["url"]: c["title"] for c in json.load(open(cpath))["items"]} \
+                if os.path.exists(cpath) else {}
+        except Exception as e:
+            print(f"  prior {name}: unreadable ({type(e).__name__}) — skipped")
+            continue
+        for s_ in issue.get("sections", []):
+            for b in s_.get("blocks", []) or []:
+                for it in b.get("items", []) or []:
+                    u = it.get("url")
+                    if not u:
+                        continue
+                    urls.add(url_key(u))
+                    head = heads.get(u)
+                    if head:
+                        if title_key(head):
+                            titles.add(title_key(head))
+                        recent.append({"day": m.group(2), "title": _clean(head)})
+    # The curator only needs the last two days for its same-story check; older
+    # stories are already caught by link and headline above.
+    days = sorted({r["day"] for r in recent})[-2:]
+    recent = [r for r in recent if r["day"] in days]
+    seen, dedup = set(), []
+    for r in recent:
+        if r["title"] not in seen:
+            seen.add(r["title"])
+            dedup.append(r)
+    return urls, titles, dedup
+
+
+def drop_shipped(items: list, urls: set, titles: set) -> tuple[list, list]:
+    keep, gone = [], []
+    for i in items:
+        if url_key(i["url"]) in urls or (title_key(i["title"]) or "\0") in titles:
+            gone.append(i)
+        else:
+            keep.append(i)
+    return keep, gone
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--edition", choices=["am", "pm"], required=True)
     ap.add_argument("--out", default="candidates.json")
+    ap.add_argument("--prior", default="prior",
+                    help="directory of earlier shipped editions (see load_shipped)")
     args = ap.parse_args()
 
     now = dt.datetime.now(CT)
@@ -410,6 +499,11 @@ def main() -> None:
             seen.add(i["url"])
             kept.append(i)
 
+    shipped_urls, shipped_titles, recent = load_shipped(args.prior, f"{now:%Y-%m-%d}")
+    kept, gone = drop_shipped(kept, shipped_urls, shipped_titles)
+    print(f"\n{len(gone)} candidates already shipped on an earlier day — dropped "
+          f"(checked against {len(shipped_urls)} prior links)")
+
     # Newest-first, then cap each section so one chatty feed cannot crowd out a
     # section that only had a handful of candidates to begin with.
     kept.sort(key=lambda i: i["published"], reverse=True)
@@ -429,7 +523,7 @@ def main() -> None:
 
     payload = {"edition": args.edition, "generated_at": now.isoformat(),
                "window_start": cutoff.isoformat(), "by_section": by_sec,
-               "items": items}
+               "items": items, "recently_shipped": recent}
     with open(args.out, "w") as f:
         json.dump(payload, f, indent=1)
 

@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import art  # noqa: E402
+import market as mkt  # noqa: E402
 from compass import head, sec, sub, item, note, lead, foot, wrap, greet  # noqa: E402
 
 CT = ZoneInfo("America/Chicago")
@@ -119,7 +120,7 @@ def render(issue: dict, edition: str, now: dt.datetime, assets: dict,
     have = assets.__contains__
     rows = [head(edition, f"{now:%A, %B %-d, %Y}".upper(), f"{now:%-I:%M %p} CT",
                  issue_no, cover=have("cover"), ticker=have("ticker"),
-                 y10=market.get("y10"))]
+                 y10=market.get("y10"), spy=market.get("spy"))]
     count = 0
     spark_used = False
     for s_ in issue["sections"]:
@@ -195,6 +196,28 @@ def send(html: str, edition: str, now: dt.datetime, assets: dict) -> None:
         s.send_message(msg)
 
 
+def refresh(edition: str, market: dict, assets: dict, now: dt.datetime,
+            no: int) -> dict:
+    """Re-read SPY and re-render the market art. Returns the old assets on any
+    failure — a stale chart is fine, a late or missing edition is not."""
+    try:
+        fresh = dict(market)
+        fresh.update(mkt.spy_intraday())
+        mkt.settle_spy(fresh)
+        new = art.build(edition, fresh, f"{now:%A, %B %-d, %Y}".upper(),
+                        f"{now:%-I:%M %p} CT", no, NAME)
+        out = dict(assets)
+        for key in ("cover", "ticker"):
+            if key in new and key in assets:
+                out[key] = new[key]
+        print(f"  refreshed SPY to {fresh.get('spy')} "
+              f"({len(fresh.get('spy_intraday') or [])} points)")
+        return out
+    except Exception as e:
+        print(f"  SPY refresh failed ({type(e).__name__}: {e}) — sending the art as built")
+        return assets
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--edition", choices=["am", "pm"], required=True)
@@ -267,7 +290,16 @@ def main() -> None:
                 # here is what converts an unreliable start into an exact delivery.
                 print(f"built at {dt.datetime.now(CT):%H:%M:%S} — holding "
                       f"{wait/60:.1f} min to send at {target:%H:%M:00} CT")
-                time.sleep(wait)
+                # Sleep to just short of the minute, then redraw the cover and
+                # ticker from a fresh SPY tape. The issue was built 20-40 minutes
+                # ago; this is what makes the chart run to the moment it lands —
+                # the open for the morning, most of the session for the afternoon.
+                lead = min(wait, 150)
+                time.sleep(wait - lead)
+                assets = refresh(args.edition, market, assets, now, no)
+                wait = (target - dt.datetime.now(CT)).total_seconds()
+                if wait > 0:
+                    time.sleep(wait)
             else:
                 print(f"target {args.send_at} CT already passed — sending now "
                       f"({-wait/60:.1f} min late)")

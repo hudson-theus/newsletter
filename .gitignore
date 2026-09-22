@@ -28,3 +28,4 @@ market.json
 
 # wrangler writes account id and cached auth state here
 .wrangler/
+prior/
