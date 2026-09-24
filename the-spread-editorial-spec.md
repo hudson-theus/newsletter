@@ -257,6 +257,11 @@ belongs in the CRE Snapshot as a trend.
 
 **Anything behind a paywall.** See section 5.
 
+**Satire presented as news.** Humor columns and satire outlets (the Cavalier
+Daily's humor desk, The Onion) write headlines that read like reporting. One may
+run only when it is worth the reader's time, written as the joke it is, and
+labelled SATIRE:. Its premise is never stated as fact.
+
 **Sports outside the Cowboys, NFL, Mavericks, and UVA.** See section 3.
 
 ---

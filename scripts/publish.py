@@ -10,6 +10,10 @@ Two independent guards against bad links, in order of strength:
 
 An item that fails either check ships unlinked rather than being dropped, per the
 spec: an unlinked true item is fine, a confidently wrong link is not.
+
+Satire is labelled here too, for the same reason: it cannot be left to the model.
+collect.py flags every satirical candidate; any item built from one ships with a
+SATIRE: label, whatever the curator wrote and even from fallback.py.
 """
 
 import argparse
@@ -17,6 +21,7 @@ import concurrent.futures as futures
 import datetime as dt
 import json
 import os
+import re
 import smtplib
 import sys
 import time
@@ -85,6 +90,25 @@ def all_items(issue: dict):
         for b in s.get("blocks", []):
             for i in b.get("items", []):
                 yield i
+
+
+SATIRE_LABEL = "<b>SATIRE:</b> "
+_LEADING_TAGS = re.compile(r"^(?:\s|<[^>]+>)*")
+
+
+def label_satire(issue: dict, satire: set[str]) -> None:
+    """Prefix every item sourced from a satire-flagged candidate. On 2026-09-24 a
+    Cavalier Daily humor piece ran as "UVA's president announced the historic
+    Academical Village will be demolished" -- stated as fact in the reader's own
+    brief. Runs before verify(), which may null a dead link and with it the only
+    way to recognise the item."""
+    for i in all_items(issue):
+        if i.get("url") not in satire:
+            continue
+        plain = _LEADING_TAGS.sub("", i.get("text", ""))
+        if not plain.lower().startswith("satire"):
+            i["text"] = SATIRE_LABEL + i.get("text", "")
+        print(f"  SATIRE (labelled): {i['url']}")
 
 
 def verify(issue: dict, allowed: set[str]) -> dict:
@@ -232,7 +256,9 @@ def main() -> None:
 
     now = dt.datetime.now(CT)
     issue = json.load(open(args.issue))
-    allowed = {i["url"] for i in json.load(open(args.candidates))["items"]}
+    cands = json.load(open(args.candidates))["items"]
+    allowed = {i["url"] for i in cands}
+    satire = {i["url"] for i in cands if i.get("satire")}
 
     try:
         market = json.load(open(args.market))
@@ -241,6 +267,7 @@ def main() -> None:
         print(f"no market data ({type(e).__name__}) — cover falls back to plain")
         market = {}
 
+    label_satire(issue, satire)
     print(f"verifying against {len(allowed)} sourced URLs")
     issue = verify(issue, allowed)
 
