@@ -30,6 +30,15 @@ days' shipped issues into prior/, and anything whose link or headline shipped on
 an earlier day is removed here, before the curator ever sees it. A morning item
 may still reappear that afternoon: same-day repeats are allowed on purpose.
 
+Nothing satirical ships as fact. On 2026-09-24 the afternoon edition ran "UVA's
+president announced the historic Academical Village will be demolished" as news.
+It was a Cavalier Daily humor piece whose first line says it is satire, but the
+curator only ever sees a headline -- here one rebuilt from the URL slug, since
+that sitemap has no titles -- so it had no way to know. Satire is now detected
+here, deterministically (flag_satire), and every such candidate carries
+`"satire": true`. publish.py then labels it in the issue whatever the curator
+wrote.
+
 Writes candidates.json for the curation stage.
 """
 
@@ -38,12 +47,14 @@ import concurrent.futures as futures
 import datetime as dt
 import glob
 import gzip
+import html
 import json
 import os
 import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zlib
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
@@ -348,9 +359,13 @@ def fetch(entry: tuple[str, str, str]) -> list[dict]:
             continue
         if when.tzinfo is None:
             when = when.replace(tzinfo=dt.timezone.utc)
-        out.append({"title": _clean(title), "url": link.strip(), "src": tag,
-                    "section": section,
-                    "published": when.astimezone(CT).isoformat()})
+        cats = [_clean(c.text or c.get("term", "")) for c in it
+                if c.tag.endswith("category")]
+        row = {"title": _clean(title), "url": link.strip(), "src": tag,
+               "section": section, "published": when.astimezone(CT).isoformat()}
+        if any(cats):
+            row["categories"] = [c for c in cats if c]
+        out.append(row)
         if len(out) >= PER_FEED:
             break
     print(f"  {section}/{tag}: {len(out)} items")
@@ -471,6 +486,131 @@ def drop_shipped(items: list, urls: set, titles: set) -> tuple[list, list]:
             keep.append(i)
     return keep, gone
 
+# ---- SATIRE -----------------------------------------------------------------
+# Humor sections and satire outlets write headlines that read exactly like news.
+# The curator sees only the headline, so it cannot tell them apart; this must.
+# Every check below is cheap and independent, and any one of them flags the item.
+# None of them can drop an item or fail the run -- satire is labelled, not banned.
+
+SATIRE_WORDS = ("humor", "humour", "satire", "satirical", "parody", "spoof")
+
+# Outlets that are satire end to end. None is in FEEDS today; this is the guard
+# for the day one is added, or a wire story links through to one.
+SATIRE_DOMAINS = {"theonion.com", "babylonbee.com", "clickhole.com",
+                  "thehardtimes.net", "reductress.com", "newsthump.com",
+                  "thebeaverton.com", "waterfordwhispersnews.com",
+                  "thedailymash.co.uk", "duffelblog.com", "gomerblog.com"}
+
+# Section sitemaps whose every URL is humor. The Cavalier Daily publishes one
+# sitemap per section (sports.xml is already read above); humor.xml is its
+# satire desk. A fetch failure only loses this one signal -- the page probe below
+# still reads the article itself.
+SATIRE_SITEMAPS = [
+    "https://www.cavalierdaily.com/sitemap/section/humor.xml",
+]
+
+# Sources whose candidates are fetched and read before the curator sees them.
+# The Cavalier Daily runs straight news and a humor desk under one masthead and
+# one URL scheme, and its sitemap carries no headline at all, so the article page
+# is the only place the difference shows. Kept to the sources that need it: one
+# request per item, and these are the only ones that mix the two.
+PROBE_SOURCES = {"Cavalier Daily"}
+
+_SATIRE_PATH = re.compile(r"/(?:humou?r|satire|satirical|parody)(?:/|$)", re.I)
+_META_TAG = re.compile(r"<meta\b[^>]*>", re.I)
+_META_ATTR = re.compile(r'([\w:-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+_LD_SECTION = re.compile(r'"articleSection"\s*:\s*"([^"]+)"', re.I)
+# The disclaimer itself: "This article is satire", "The following is a work of
+# satire", "is a satirical piece", "This is a humor column". Deliberately narrow --
+# a news report ABOUT a satirist must not trip it.
+_DISCLAIMER = re.compile(
+    r"\b(?:this|the following)\s+(?:article|piece|story|column|post|is)\b[^.<]{0,40}?"
+    r"\b(?:satire|satirical|humou?r\s+(?:piece|column|article))\b", re.I)
+
+
+def _host(url: str) -> str:
+    return urllib.parse.urlsplit(url).netloc.lower().removeprefix("www.")
+
+
+def satire_sitemap_urls() -> set:
+    keys = set()
+    for sm in SATIRE_SITEMAPS:
+        for i in fetch_sitemap(("satire", "satire-index", sm)):
+            keys.add(url_key(i["url"]))
+    return keys
+
+
+def _metas(page: str) -> dict:
+    """<meta> name/property -> content, whatever order the attributes come in."""
+    out = {}
+    for tag in _META_TAG.findall(page):
+        a = {k.lower(): v or q for k, v, q in _META_ATTR.findall(tag)}
+        key = (a.get("property") or a.get("name") or "").lower()
+        if key and "content" in a:
+            out.setdefault(key, html.unescape(a["content"]))
+    return out
+
+
+def probe(item: dict) -> tuple[str | None, str | None]:
+    """Read the article page: its declared section, and its opening line. Returns
+    (reason if satire else None, description). Never raises."""
+    try:
+        req = urllib.request.Request(item["url"], headers=HDRS)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            raw = _decompress(r.read(400_000),
+                              (r.headers.get("Content-Encoding") or "").lower())
+        page = raw.decode("utf-8", "ignore")
+    except Exception:
+        return None, None
+    meta = _metas(page)
+    desc = _clean(meta.get("og:description") or meta.get("description") or "") or None
+    for sec_ in [meta.get("article:section", "")] + _LD_SECTION.findall(page):
+        if any(w in sec_.lower() for w in SATIRE_WORDS):
+            return f"page section '{sec_}'", desc
+    text = html.unescape(TAGSTRIP.sub(" ", page))
+    m = _DISCLAIMER.search(text)
+    if m:
+        return f"page says '{' '.join(m.group(0).split())}'", desc
+    return None, desc
+
+
+def flag_satire(items: list) -> None:
+    """Mark every satirical candidate in place with satire=True and the reason."""
+    index = satire_sitemap_urls()
+
+    def mark(i, why):
+        if not i.get("satire"):
+            i["satire"], i["satire_reason"] = True, why
+
+    for i in items:
+        path = urllib.parse.urlsplit(i["url"]).path
+        if _host(i["url"]) in SATIRE_DOMAINS:
+            mark(i, "satire outlet")
+        elif _SATIRE_PATH.search(path):
+            mark(i, "humor/satire URL")
+        elif any(w in c.lower() for c in i.get("categories", []) for w in SATIRE_WORDS):
+            mark(i, "feed category")
+        elif url_key(i["url"]) in index:
+            mark(i, "humor section sitemap")
+
+    todo = [i for i in items if i["src"] in PROBE_SOURCES]
+    with futures.ThreadPoolExecutor(max_workers=8) as ex:
+        for i, (why, desc) in zip(todo, ex.map(probe, todo)):
+            if desc:
+                # The article's own opening line. For headline-less sitemaps it is
+                # the only text the curator gets beyond the slug.
+                i["dek"] = desc[:300]
+            if why:
+                mark(i, why)
+
+    for i in items:
+        i.pop("categories", None)   # detection only; the curator does not need them
+    flagged = [i for i in items if i.get("satire")]
+    print(f"\n{len(flagged)} satire candidates flagged "
+          f"({len(index)} humor-index links, {len(todo)} pages probed)")
+    for i in flagged:
+        print(f"  SATIRE ({i['satire_reason']}): {i['url']}")
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -515,6 +655,12 @@ def main() -> None:
             continue
         taken[s_] = taken.get(s_, 0) + 1
         items.append(i)
+    try:
+        flag_satire(items)
+    except Exception as e:
+        # Losing the flags must not lose the edition; the curator's own satire
+        # rules still apply to what it can see.
+        print(f"satire check failed ({type(e).__name__}: {e}) — no items flagged")
     by_sec: dict[str, int] = {}
     for i in items:
         by_sec[i["section"]] = by_sec.get(i["section"], 0) + 1

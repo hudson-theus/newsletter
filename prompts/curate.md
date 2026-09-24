@@ -124,6 +124,30 @@ material new development, and then write it as the update ("…now confirmed for
 January"), not as the original news. Repeating an item from this morning's
 edition in the afternoon is fine.
 
+## Satire is never news
+
+On 2026-09-24 the afternoon edition told the reader, as fact, that "UVA's
+president announced the historic Academical Village will be demolished." It was a
+Cavalier Daily humor piece, and its first line says it is satire. Nothing like it
+may happen again.
+
+- A candidate with `"satire": true` is humor, not news. It may run if it is
+  actually funny and belongs in the issue (the reader is happy to see a good UVA
+  humor piece), but it must be written as the joke it is: "The
+  <b>Cavalier Daily</b>'s humor desk imagines the Academical Village being
+  demolished." Never state its premise as something that happened. Keep its `url`.
+  `publish.py` adds a SATIRE: label in front of it, so do not write your own.
+- A satire item never counts as news for any section, never satisfies an
+  `attention` requirement, and never goes in FRONT MATTER.
+- Candidates from the Cavalier Daily carry a `dek`: the article's own opening
+  line. Read it before using the item. Their titles are rebuilt from the URL and
+  say nothing about tone.
+- The flag can miss one. Treat an outlandish headline carried by one outlet and
+  nobody else in the candidate list — a landmark demolished, a university
+  abolishing a tradition overnight, an official doing something absurd — as
+  probable satire, most of all from a student paper. Leave it out unless another
+  candidate confirms it. Losing a true item costs less than printing a false one.
+
 ## Two rules that previous issues broke
 
 **The person cap.** No single political figure may anchor more than **two items
