@@ -1,13 +1,13 @@
 {
  "dark": {
-  "COWBOYS & NFL": 1,
+  "COWBOYS & NFL": 0,
   "DALLAS / TEXAS": 0,
-  "FOOD & DRINK": 2,
-  "GOING OUT": 1,
+  "FOOD & DRINK": 0,
+  "GOING OUT": 0,
   "IPOS & LISTINGS": 0,
-  "MAVERICKS": 6,
-  "VIRGINIA": 1,
+  "MAVERICKS": 7,
+  "VIRGINIA": 2,
   "WORTH READING": 0
  },
- "editions": 42
+ "editions": 43
 }
