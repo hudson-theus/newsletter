@@ -235,7 +235,14 @@ FRONT MATTER carries no blocks — its sentence goes in `front_matter`.
 
 Do **not** open it with a greeting. `publish.py` prepends "Good morning, Hudson."
 or "Good afternoon, Hudson." itself, so a greeting written here would be stripped
-and a duplicate is the only thing that can go wrong. Start on the first clause.
+and a duplicate is the only thing that can go wrong. Start on the first clause,
+capitalised, as a sentence of its own.
+
+Exec Sum, which the spec models this on, opens "Good morning, stocks fell...".
+Keep its five-clause shape and drop its greeting:
+
+- Wrong: `"Good afternoon, hot inflation at 3.7% drags the S&amp;P 500 down..."`
+- Right: `"Hot inflation at 3.7% drags the S&amp;P 500 down..."`
 
 ## Writing
 
