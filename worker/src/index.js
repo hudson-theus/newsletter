@@ -89,15 +89,57 @@ export default {
     );
   },
 
+  // GET /fred?series=ID proxies FRED's official API for market.py. The key stays a
+  // Worker secret (it is never in the public repo or a workflow log), and only the
+  // series COMPASS charts are served, so this cannot be used as an open FRED proxy.
   // GET / reports what the Worker would do right now, so the whole chain can be
   // verified without waiting for a cron fire. It never dispatches.
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname === "/fred") return fred(url, env, ctx);
     const now = chicagoNow();
     return Response.json({
       chicago: `${now.weekday} ${String(now.hour).padStart(2, "0")}:00`,
       edition_due: editionDue(now),
       token_configured: Boolean(env.GITHUB_TOKEN),
+      fred_configured: Boolean(env.FRED_API_KEY),
       repo: REPO,
     });
   },
 };
+
+// The series market.py reads. Anything else is refused.
+const FRED_SERIES = new Set([
+  "DRCRELEXFACBS", "CPIAUCSL", "CPILFESL", "UNRATE", "BAMLH0A0HYM2",
+]);
+
+async function fred(url, env, ctx) {
+  const id = url.searchParams.get("series") || "";
+  if (!FRED_SERIES.has(id)) {
+    return Response.json({ error: "series not served" }, { status: 404 });
+  }
+  if (!env.FRED_API_KEY) {
+    return Response.json({ error: "FRED_API_KEY secret is not set" }, { status: 503 });
+  }
+  // FRED publishes these monthly or quarterly (daily for the HY spread); an hour
+  // of edge cache costs nothing in freshness and keeps the key's quota untouched.
+  const cache = caches.default;
+  const key = new Request(`https://fred-cache.compass/${id}`);
+  const hit = await cache.match(key);
+  if (hit) return hit;
+  const api = "https://api.stlouisfed.org/fred/series/observations"
+    + `?series_id=${id}&api_key=${env.FRED_API_KEY}&file_type=json`
+    + "&sort_order=desc&limit=24";
+  const res = await fetch(api, { headers: { "User-Agent": "compass-trigger" } });
+  if (!res.ok) {
+    return Response.json({ error: `FRED answered ${res.status}` }, { status: 502 });
+  }
+  const body = await res.json();
+  const obs = (body.observations || [])
+    .filter((o) => o.value !== ".")
+    .map((o) => ({ date: o.date, value: Number(o.value) }));
+  const out = Response.json({ series: id, observations: obs },
+    { headers: { "Cache-Control": "public, max-age=3600" } });
+  ctx.waitUntil(cache.put(key, out.clone()));
+  return out;
+}
