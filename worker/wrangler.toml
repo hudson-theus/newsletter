@@ -12,10 +12,16 @@ compatibility_date = "2026-08-01"
 #
 # 13:15/13:45 UTC = 08:15/08:45 CDT   |   14:15/14:45 UTC = 08:15/08:45 CST
 # 18:15/18:45 UTC = 13:15/13:45 CDT   |   19:15/19:45 UTC = 13:15/13:45 CST
+#
+# Weekdays are NAMED, never numbered. Cloudflare counts day-of-week from
+# Sunday = 1, so the "1-5" this used to say meant Sunday-Thursday: every Friday
+# afternoon edition went undispatched and fell to GitHub's late cron backstop.
+# On 2026-10-09 that started at 13:45 CT, fifteen minutes before the send, and
+# the edition shipped unedited.
 [triggers]
 crons = [
   "15,45 13,14 * * *",
-  "15,45 18,19 * * 1-5",
+  "15,45 18,19 * * MON-FRI",
 ]
 
 # Without this there are no Worker logs at all, and a missed fire cannot be told

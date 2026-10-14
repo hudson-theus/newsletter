@@ -77,18 +77,37 @@ def issue_number(day: dt.date, edition: str) -> int:
     return n + (2 if edition == "pm" else 1)
 
 
+# Any greeting the curator wrote anyway, with or without the name, and whatever
+# punctuation it ran into the first clause with. The name or punctuation is
+# required, so a headline like "Good morning for borrowers..." is left alone.
+_PUNCT = r"[,.:;!—–-]"
+_GREETING = re.compile(
+    rf"^\s*good\s+(?:morning|afternoon|evening)"
+    rf"(?:\s*,?\s*{re.escape(NAME)}\b\s*{_PUNCT}*|\s*{_PUNCT}+)\s*", re.I)
+_LEADING_MARKUP = re.compile(r"^(?:\s|<[^>]+>|&[a-z]+;|[\"'“‘(])*", re.I)
+
+
 def opener(edition: str, sentence: str) -> str:
-    """Address the reader, then hand straight over to the day's five clauses."""
-    for stale in ("Good morning,", "Good afternoon,", "Good morning.", "Good afternoon."):
-        if sentence.strip().startswith(stale):
-            sentence = sentence.strip()[len(stale):].lstrip()
-    return sentence
+    """Address the reader, then hand straight over to the day's five clauses.
+
+    The spec models this sentence on Exec Sum's opener, which reads "Good
+    morning, stocks...". On 2026-10-14 the curator wrote exactly that shape,
+    "Good afternoon, hot inflation at 3.7%...". Stripping the greeting left the
+    sentence starting lowercase, which read as an edition cut off mid-sentence.
+    So the greeting is stripped in any form and the first letter is restored.
+    """
+    sentence = _GREETING.sub("", sentence.strip(), count=1)
+    m = _LEADING_MARKUP.match(sentence)
+    k = m.end() if m else 0
+    return sentence[:k] + sentence[k:k + 1].upper() + sentence[k + 1:]
 
 
 def all_items(issue: dict):
-    for s in issue["sections"]:
-        for b in s.get("blocks", []):
-            for i in b.get("items", []):
+    # `or []`: a curator that writes "blocks": null or "items": null has
+    # written an empty block, not a reason to crash the send.
+    for s in issue.get("sections") or []:
+        for b in s.get("blocks") or []:
+            for i in b.get("items") or []:
                 yield i
 
 
@@ -149,19 +168,19 @@ def render(issue: dict, edition: str, now: dt.datetime, assets: dict,
     spark_used = False
     for s_ in issue["sections"]:
         if not s_["title"].upper().startswith("FRONT") and not any(
-                b.get("items") for b in s_.get("blocks", [])):
+                b.get("items") for b in s_.get("blocks") or []):
             continue  # omitted section: never render a heading with nothing under it
         rows.append(sec(edition, s_["title"], marker=have("marker")))
         if s_["title"].upper().startswith("FRONT"):
-            fm = issue.get("front_matter")
+            fm = opener(edition, issue.get("front_matter") or "")
             rows.append(greet(f"{GREETING[edition]}, {NAME}.", card=have("greet")))
             if fm:
-                rows.append(lead(opener(edition, fm)))
+                rows.append(lead(fm))
             continue
-        for b in s_.get("blocks", []):
+        for b in s_.get("blocks") or []:
             if b.get("label"):
                 rows.append(sub(b["label"]))
-            items = b.get("items", [])
+            items = b.get("items") or []
             for n, it in enumerate(items):
                 if it.get("note"):
                     # Numbers lines (the rate path, the CRE snapshot) render as a

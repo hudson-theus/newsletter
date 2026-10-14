@@ -184,8 +184,15 @@ jobs:
       # 10-12 minutes, so 15 is generous; 15 + 60s + 15 + 180s + 8 = 42 minutes,
       # which still fits inside the 45-minute sweep lead with collection's ~2.5
       # minutes ahead of it. Even three timed-out attempts now reach fallback.py
-      # in time to send on the minute. A timed-out step reports outcome
-      # 'failure', so the existing retry gates below pick it up unchanged.
+      # in time to send on the minute.
+      #
+      # Retries are gated on the CHECK after each attempt, not on the attempt's
+      # own outcome. On 2026-10-09 attempt 1 exited 0 in 107 seconds without a
+      # usable issue.json; the old gates saw "success", skipped attempts 2 and 3,
+      # and the afternoon edition shipped unedited. A timed-out or failed attempt
+      # leaves no valid file, so the check catches that case too. A rejected file
+      # is moved into rejected/ with the reason, so the next attempt starts clean
+      # and the run keeps the evidence.
       - name: Curate issue (attempt 1)
         id: curate1
         timeout-minutes: 15
@@ -201,14 +208,22 @@ jobs:
             --max-turns 120
             --allowedTools Read,Write,Edit,Glob,Grep
 
+      - name: Check attempt 1
+        id: check1
+        if: steps.cfg.outputs.skip == 'false'
+        continue-on-error: true
+        run: |
+          python scripts/check_issue.py --reject-to rejected --label attempt1 \
+            --log "$RUNNER_TEMP/claude-execution-output.json"
+
       - name: Back off before retry
-        if: steps.cfg.outputs.skip == 'false' && steps.curate1.outcome == 'failure'
+        if: steps.cfg.outputs.skip == 'false' && steps.check1.outcome == 'failure'
         run: sleep 60
 
       - name: Curate issue (attempt 2)
         id: curate2
         timeout-minutes: 15
-        if: steps.cfg.outputs.skip == 'false' && steps.curate1.outcome == 'failure'
+        if: steps.cfg.outputs.skip == 'false' && steps.check1.outcome == 'failure'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -220,14 +235,22 @@ jobs:
             --max-turns 120
             --allowedTools Read,Write,Edit,Glob,Grep
 
+      - name: Check attempt 2
+        id: check2
+        if: steps.cfg.outputs.skip == 'false' && steps.check1.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          python scripts/check_issue.py --reject-to rejected --label attempt2 \
+            --log "$RUNNER_TEMP/claude-execution-output.json"
+
       - name: Back off before final retry
-        if: steps.cfg.outputs.skip == 'false' && steps.curate2.outcome == 'failure'
+        if: steps.cfg.outputs.skip == 'false' && steps.check2.outcome == 'failure'
         run: sleep 180
 
       - name: Curate issue (attempt 3)
         id: curate3
         timeout-minutes: 8
-        if: steps.cfg.outputs.skip == 'false' && steps.curate2.outcome == 'failure'
+        if: steps.cfg.outputs.skip == 'false' && steps.check2.outcome == 'failure'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -239,20 +262,27 @@ jobs:
             --max-turns 120
             --allowedTools Read,Write,Edit,Glob,Grep
 
+      - name: Check attempt 3
+        id: check3
+        if: steps.cfg.outputs.skip == 'false' && steps.check2.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          python scripts/check_issue.py --reject-to rejected --label attempt3 \
+            --log "$RUNNER_TEMP/claude-execution-output.json"
+
       # A curated issue.json that is missing, empty, or unparseable is treated the
-      # same as a failed step: fall back rather than ship nothing.
+      # same as a failed step: fall back rather than ship nothing. The check prints
+      # why, rather than sending it to /dev/null as this step used to.
       - name: Fall back to an unedited issue if curation never produced one
+        id: fallback
         if: steps.cfg.outputs.skip == 'false'
         run: |
-          if python -c "
-          import json,sys
-          d=json.load(open('issue.json'))
-          n=sum(len(b.get('items',[])) for s in d['sections'] for b in s.get('blocks',[]))
-          sys.exit(0 if n else 1)" 2>/dev/null; then
-            echo "curated issue.json is present and non-empty"
+          if python scripts/check_issue.py; then
+            echo "curated issue.json is present and usable"
           else
             echo "::warning::curation produced no usable issue — building the unedited fallback"
             python scripts/fallback.py
+            echo "used=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Verify and publish
@@ -285,6 +315,45 @@ jobs:
             candidates.json
           if-no-files-found: warn
           retention-days: 7
+
+      # Shipping the fallback is not a miss, so the watchdog never sees it: the
+      # shipped-marker exists. Without this the reader is the only one who
+      # notices, as on 2026-10-09.
+      - name: Say so if the edition shipped unedited
+        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != '' && steps.fallback.outputs.used == 'true'
+        continue-on-error: true
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+          ED: ${{ steps.cfg.outputs.edition }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+        run: |
+          REASONS=$(cat rejected/reasons.txt 2>/dev/null || echo "no curation attempt left a reason")
+          BODY=$(cat <<EOF
+          Today's $ED edition went out as the unedited fallback: no curation
+          attempt produced a usable issue.
+
+          $REASONS
+
+          Rejected output: artifact rejected-$RUN
+          Run log: https://github.com/$REPO/actions/runs/$RUN
+          EOF
+          )
+          python scripts/alert.py "COMPASS $ED shipped unedited" "$BODY"
+
+      # Every rejected curation attempt, with its execution log. On 2026-10-09
+      # the rejected file was overwritten by the fallback and the reason was
+      # lost; this is what makes the next one diagnosable.
+      - name: Keep rejected curation output
+        if: always() && steps.cfg.outputs.skip == 'false' && hashFiles('rejected/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: rejected-${{ github.run_id }}
+          path: rejected/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # A run that does not send leaves no shipped-marker (see above), so without
       # this a dry run would produce nothing to look at.
