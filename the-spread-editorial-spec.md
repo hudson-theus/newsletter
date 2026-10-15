@@ -36,17 +36,36 @@ and what happened to his teams.
 | | Time | Days | Scope |
 |---|---|---|---|
 | **Morning** | 9:00 AM CT | Every day | Full format, 55–65 items |
-| **Afternoon** | 2:00 PM CT | Mon–Fri | Only new items and follow-ups |
+| **Afternoon** | 2:00 PM CT | Mon–Fri | What changed since the morning, roughly 25–40 items |
 
 **Weekends:** morning edition only. No 2 PM. Weekend issues run naturally shorter
 because markets are closed and deal announcements thin out. Do not pad. A Sunday
 issue of 25 real items beats 70 with filler.
 
-**Afternoon continuity rule.** Before writing, search past conversations for that
-morning's issue and exclude anything already covered. If the search returns
-nothing, fall back to a hard time window: include only items published after
-11:00 AM CT. Additionally, follow up on any story the morning edition tagged
-`[developing]`. Lead the afternoon edition with those follow-ups.
+**The afternoon edition is "what changed since this morning."** The reader read
+the 9:00 issue five hours earlier; the 2:00 issue tells him what moved since.
+
+- The afternoon run is handed the morning's edition as data: every item it
+  shipped, with its section, original headline and link (`this_morning` in
+  `candidates.json`). The pipeline reads it from the morning's archived issue;
+  nothing has to be searched for or remembered.
+- **Lead with what moved since 9:00**: a print or a Fed remark since the morning,
+  a market move, a deal announced at midday, a ruling, a vote.
+- **A morning item does not run again** unless there is a material new
+  development, and then it is written as the update ("…now priced at $21, above
+  its range"), not as the original news. The morning's items stay in the
+  afternoon's candidate pool on purpose, so that a follow-up has the original
+  story within reach.
+- **The slower sections appear only with something new since the morning:**
+  Worth Reading, Food & Drink, Going Out, CRE Snapshot, CRE Desk, and the
+  features and previews in Sports. Most of what exists for them either ran that
+  morning or was passed over then.
+- **Shorter is correct.** The item counts in section 3 describe a full edition;
+  in the afternoon they are not minimums. A 30-item afternoon with four sections
+  omitted is a good afternoon.
+- **If the morning edition failed or never shipped**, the afternoon run receives
+  no `this_morning`, and the reader has had nothing that day. It is then written
+  as a normal full edition.
 
 ---
 
@@ -58,7 +77,15 @@ Front Matter · The Economy · CRE Snapshot · CRE Desk · Deal Flow · AI & Ent
 United States · The World · Dallas / Texas · Sports · Worth Reading
 
 A section with nothing real in it is omitted for that issue rather than padded. The
-order never changes.
+order never changes. The item counts below are for a full edition; the afternoon
+edition runs shorter (section 2).
+
+Section titles and subsection labels are fixed strings: the section names above
+and the subsection names below, in capitals, written exactly as listed in
+`prompts/curate.md` (where an ampersand is `&amp;`, as in `AI &amp; ENTERPRISE`).
+The tracker that keeps thin subsections from going permanently dark
+(`scripts/sections.py`) matches them exactly, so a paraphrased label reads as a
+missing block.
 
 ### Front Matter
 One sentence. Five clauses, comma-separated, naming the day's five biggest
@@ -95,7 +122,9 @@ number that is missing from it.
 **This section is market health, not transactions.** It exists because the reader
 asked for trends and condition rather than a feed of acquisitions, and because on a
 quiet day the CRE wires carry three property trades and nothing about the state of
-the market. Numbers are always available; deals are not.
+the market. Numbers are collected every run, whatever the news flow; deals are
+not. Any one series can still be missing on a given run (a source down, or a print
+too old to state as current), and then its number is simply left out.
 
 Opens with a **numbers line** built from `market.json`, which is collected
 deterministically before the model runs. Always leads with the 10Y, because that is
@@ -296,13 +325,21 @@ needed, because nothing paywalled should be in the issue.
 This is the strictest rule in the spec. The reader flagged it explicitly and it is
 the thing most likely to quietly break.
 
-1. **Every URL must originate from a live search result or a page actually
-   fetched during this run.** Never reconstruct a URL from memory. Never edit a
+The curator only reads and writes files; fetching, verifying, rendering and
+sending are done by the pipeline. The rules below say who does what.
+
+1. **Every URL comes from `candidates.json`, copied verbatim.** That file is built
+   by `scripts/collect.py` from the sources' own feeds, so every link in it was
+   published by the outlet. Never reconstruct a URL from memory. Never edit a
    known URL's path to guess at another article. Never assemble a plausible-looking
-   permalink.
-2. **Verify every link resolves before publishing.** Fetch each one. Confirm it
-   returns the intended article and not a 404, a homepage redirect, or a
-   different story.
+   permalink. An item's `url` field is its only link: no links, bare URLs or other
+   markup inside its text.
+2. **`scripts/publish.py` verifies every link before sending.** It checks
+   provenance (a URL that is not in `candidates.json` was invented, and loses its
+   link) and resolution (it fetches each link; one that is gone loses its link),
+   and it strips any markup in the text beyond bold and italics, so a link cannot
+   travel any other way. The footer of every issue reports how many links were
+   checked and dropped.
 3. **A link that fails verification is removed, not guessed at.** The item ships
    without a link, or the item is dropped. An unlinked true item is fine. A
    confidently wrong link is not.
@@ -365,8 +402,9 @@ in his own work daily (API, agent, repo, Series A, ARR).
 ## 8. Voice
 
 Flat, dense, declarative. Exec Sum's register minus the frat humor. Bold every
-company, fund, and person. Lead with the number when there is one. Never explain
-what a term means. Never editorialize. Never pad a section to hit a count.
+company, fund, and person. Lead with the number when there is one. Translate the
+section 7 terms once, in a clause; never explain terms he uses daily (API, agent,
+ARR, Series A). Never editorialize. Never pad a section to hit a count.
 
 Em dashes used sparingly. No exclamation points. No "notably," no "interestingly."
 
@@ -377,16 +415,23 @@ Em dashes used sparingly. No exclamation points. No "notably," no "interestingly
 Single-file HTML, styled to read like a real newsletter and to survive being
 forwarded from a phone. Inline CSS only, no external stylesheets, no web fonts
 fetched at open, tables where email clients need them. Section rules and bold
-entity treatment carry the visual structure. Render and screenshot-verify before
-delivery.
+entity treatment carry the visual structure.
+
+None of this is the curator's job. The curator writes `issue.json` (structured
+text: sections, blocks, items, links) and nothing else. The pipeline renders it:
+`compass.py` is the design system, `scripts/art.py` draws the animated cover,
+ticker and sparkline from the day's numbers, and `scripts/publish.py` checks the
+links, assembles the email and sends it at the edition's time. Each run's rendered
+HTML is kept as a workflow artifact, so an issue can be inspected after the fact
+or, on a dry run, before it is ever sent.
 
 ---
 
 ## 10. Delivery
 
 Morning edition 9:00 AM CT daily; afternoon edition 2:00 PM CT weekdays. Built and
-sent by scheduled automation, which carries this spec into each run since every run
-starts from a blank context.
+sent by scheduled automation (see `README.md`), which carries this spec into each
+run since every run starts from a blank context.
 
 The recipient address is supplied to the sender at runtime and is deliberately not
 recorded here.
