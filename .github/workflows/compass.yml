@@ -15,10 +15,11 @@ run-name: >-
 # by October 2026 they ran about half their fires and started them 2-5 hours
 # late (no schedule run in 47 days started inside the morning window).
 #
-# A dated artifact (compass-<ed>-<date>) marks a shipped edition. It is written as
-# soon as the SMTP server has accepted the message (publish.py leaves sent.ok),
-# so any later run of the same edition stands down; a run that never sent leaves
-# no marker, so the next slot retries.
+# A dated artifact (compass-<ed>-<date>) marks a shipped edition. It is uploaded
+# by every run whose message the SMTP server accepted (publish.py leaves sent.ok
+# at that moment), even if something fails afterwards, so any later run of the
+# same edition stands down; a run that never sent leaves no marker, so the next
+# slot retries.
 #
 # Two jobs. "decide" has no concurrency group, so a run that only needs to stand
 # down never queues. "build" is grouped per edition and day: GitHub keeps one
@@ -213,8 +214,9 @@ jobs:
 
       # This job may have waited in its concurrency group behind another run of
       # the same edition (the Worker's 08:45 dispatch always queues behind its
-      # 08:15 one). If that run shipped meanwhile, stand down here, or force=true
-      # is the only way past. Same fail-closed lookup as in decide.
+      # 08:15 one). If that run shipped meanwhile, stand down here; only
+      # force=true builds past an existing marker. Same fail-closed lookup as in
+      # decide.
       - name: Re-check the shipped-marker
         id: gate
         env:
