@@ -30,7 +30,7 @@ last resort.
 | 13:15, 13:45 Mon-Fri | Worker | dispatches `compass.yml` with `edition=pm`, `source=worker` |
 | 14:00 | the 13:15 run | the afternoon edition is sent |
 | 14:20 Mon-Fri | Worker | dispatches `watchdog.yml` with `edition=pm` |
-| various | GitHub cron | backstops in both workflows, for a dead Worker; they usually arrive hours late |
+| various | GitHub cron | `compass.yml` backstops, for a dead Worker; they usually arrive hours late |
 
 - **Daylight saving.** Cloudflare crons are UTC-only, so every slot fires at both
   candidate UTC hours and the Worker checks the real Chicago clock; the twin that
@@ -45,9 +45,11 @@ last resort.
 - **The watchdog** (`watchdog.yml`) checks that today's marker exists. If it is
   missing, it dispatches a recovery run of `compass.yml` with `force=false` and
   `source=watchdog` (so the recovery still stands down if the edition shipped in
-  the meantime) and alerts with what happened. It also reports when the Worker did
-  not dispatch an edition at all. Run by hand with `edition=due`, it checks every
-  edition due so far today.
+  the meantime) and alerts with what happened. Its report also says whether the
+  Worker dispatched the edition, but it never alerts when every edition shipped.
+  Only the Worker runs it (there is no GitHub cron for it), so a dead Worker
+  shows up as late editions from the `compass.yml` backstop, not as an alert.
+  Run by hand with `edition=due`, it checks every edition due so far today.
 
 `compass.yml` can also be run by hand from the Actions tab (`workflow_dispatch`):
 
@@ -96,7 +98,7 @@ Things worth knowing about the stages:
   whatever the curator wrote.
 - **The fallback** is what ships when no curation attempt produced a usable
   issue: real headlines and links in the standing sections, no commentary. Its
-  front matter says it is unedited, and an alert goes out.
+  front matter says it is unedited, and the run logs an alert.
 - **Never raise.** `market.py`, `art.py` and `fallback.py` are written so that
   their failure costs a number or an image, never the edition. A plain brief beats
   no brief.
@@ -128,13 +130,12 @@ curator transcripts are never uploaded, only their summaries.
 | Secret | Used by | Notes |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | curation | Generated with `claude setup-token`. When it expires or is revoked, every curation attempt fails within seconds and the fallback ships. |
-| `GMAIL_ADDRESS` | `publish.py`, `alert.py` | The sending Gmail account and SMTP login. Its domain is also the `Message-ID` domain. |
-| `GMAIL_APP_PASSWORD` | `publish.py`, `alert.py` | A 16-character Google app password, stored without spaces. Needs 2-step verification on; Google revokes app passwords when the account password changes. |
-| `RECIPIENT` | `publish.py`, `alert.py` | Where editions and email alerts go. |
+| `GMAIL_ADDRESS` | `publish.py` | The sending Gmail account and SMTP login. Its domain is also the `Message-ID` domain. |
+| `GMAIL_APP_PASSWORD` | `publish.py` | A 16-character Google app password, stored without spaces. Needs 2-step verification on; Google revokes app passwords when the account password changes. |
+| `RECIPIENT` | `publish.py` | Where editions go. |
 
 The workflows' own `GITHUB_TOKEN` is automatic: it reads the marker artifacts,
-dispatches recovery runs, comments on the alerts issue and pushes the coverage
-commit.
+dispatches recovery runs and pushes the coverage commit.
 
 **GitHub repository variables** (same page, Variables tab):
 
@@ -148,7 +149,7 @@ commit.
 
 | Secret | Notes |
 |---|---|
-| `GITHUB_TOKEN` | A GitHub personal access token that can dispatch workflows on this repository (fine-grained: Actions read and write). It has the expiry chosen when it was created; when it lapses, the Worker's dispatches fail with 401, every edition falls to the late GitHub crons, and the watchdog reports "the Worker did not dispatch". |
+| `GITHUB_TOKEN` | A GitHub personal access token that can dispatch workflows on this repository (fine-grained: Actions read and write). It has the expiry chosen when it was created; when it lapses, the Worker's dispatches fail with 401, every edition falls to the late GitHub crons, and the watchdog stops running too. Late editions are the sign. |
 | `FRED_API_KEY` | A free key from fred.stlouisfed.org. The Worker serves `/fred?series=ID` to `market.py` for exactly five series, so the key never enters the repo or a workflow log. |
 
 Rotation dates are not recorded anywhere automatically. When you create or rotate
@@ -158,30 +159,25 @@ a token, note its expiry somewhere you will see it.
 
 ## Alerts
 
-`scripts/alert.py SUBJECT BODY` sends every alert to two places, so a Gmail
-problem cannot silence both the edition and the alert about it:
+**The newsletter is the only email this pipeline sends.** `scripts/alert.py
+SUBJECT BODY` writes an alert to the run itself: a warning annotation on the run
+page and a section in its step summary. Nothing is emailed and no GitHub issue is
+opened or commented on. A missing edition is noticed by its absence; the alerts
+are there to read in the Actions tab when working out why.
 
-1. **Email** to `RECIPIENT`, subject prefixed `[SPREAD]`.
-2. **A comment on the open GitHub issue titled "COMPASS alerts"** (created if
-   absent). Watch the repository or subscribe to that issue to be notified.
+Alerts are logged for: a missing or late edition, a recovery that did not ship, a
+marker that could not be checked (all from the watchdog); an edition that shipped
+as the unedited fallback; a run that failed; curation touching files other than
+`issue.json`; a coverage commit that could not be pushed.
 
-Alerts are raised for: a missing or late edition, a recovery that did not ship, a
-marker that could not be checked, the Worker not dispatching an edition (all from
-the watchdog); an edition that shipped as the unedited fallback; a run that
-failed; curation touching files other than `issue.json`; a coverage commit that
-could not be pushed.
-
-GitHub's own notifications are a third channel: with Actions notifications on in
-your GitHub settings (Notifications → Actions, failed workflows only), a failed
-run emails you,
-including runs the Worker dispatched (they run as the token's owner). Worker
-errors themselves are in Cloudflare → Workers → `compass-trigger` → Logs.
+GitHub can still email a failed run on its own, from your account's settings
+(Notifications → Actions); turn that off there to keep the inbox to editions only.
+Worker errors are in Cloudflare → Workers → `compass-trigger` → Logs.
 
 ### The Gmail Apps Script
 
 Not in this repo: an Apps Script in the owner's Google account routes mail whose
-subject starts with `[SPREAD]`. Editions (`[SPREAD] COMPASS AM / Oct 15`)
-and email alerts both carry that prefix. If a marker exists but the email is not
+subject starts with `[SPREAD]`, as editions' do (`[SPREAD] COMPASS AM / Oct 15`). If a marker exists but the email is not
 where you expect it, the pipeline sent it (the SMTP server accepted it): look at
 the script and Gmail's filters, not at the workflow. Every edition has a fixed
 Message-ID, `<compass-<ed>-<YYYY-MM-DD>@<sender domain>>`, so Gmail's search
@@ -252,8 +248,8 @@ that, disable the Worker's cron triggers in the Cloudflare dashboard.
 ## Runbook
 
 **An edition did not arrive.**
-1. Check the "COMPASS alerts" issue. The watchdog runs at 09:20 / 14:20 CT and
-   says whether the edition shipped, was recovered, or is missing.
+1. Open the latest `COMPASS watchdog` run. The Worker starts it at 09:20 / 14:20
+   CT, and its log says whether the edition shipped, was recovered, or is missing.
 2. Look for today's `compass-<ed>-<date>` artifact. If it exists, the edition was
    sent: see *The Gmail Apps Script* above.
 3. Actions tab: is there a `COMPASS <ed> · worker` run today? If not, the Worker
@@ -265,8 +261,8 @@ that, disable the Worker's cron triggers in the Cloudflare dashboard.
    only for re-sending an edition you know went out; it skips the marker check and
    sends a second copy.
 
-**An edition shipped unedited (the fallback).** Its front matter says so, and an
-alert names the reasons. The `rejected-<run_id>` artifact holds each rejected
+**An edition shipped unedited (the fallback).** Its front matter says so, and the
+run's alert names the reasons. The `rejected-<run_id>` artifact holds each rejected
 attempt's `issue.json`, `reasons.txt` and a summary of the attempt (turns, cost,
 refused tool calls, final message); the same summary is in the run's step
 summary. Attempts failing within seconds usually mean `CLAUDE_CODE_OAUTH_TOKEN`
