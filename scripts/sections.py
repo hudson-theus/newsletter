@@ -13,6 +13,12 @@ its bar — but only ever to the best *genuinely worthwhile* candidate, and only
 when candidates for it actually exist. A quiet week for UVA still yields nothing.
 A month of near-misses does not.
 
+Satire is neither supply nor coverage. A humor piece can run, labelled, but it
+never satisfies a block (prompts/curate.md), so it is not counted when deciding a
+block has candidates, and a block holding only satire has not shipped. Nor is a
+fallback edition coverage: it is an unranked feed dump, and recording it cleared
+IPOS & LISTINGS on 2026-10-09 with press releases nobody chose as IPO news.
+
   --prep    before curation: write the drought state into candidates.json
   --record  after publishing: update state/sections.json from the shipped issue
 """
@@ -43,20 +49,37 @@ TRACKED = {
 # stories, so counting the whole section said the Mavericks had material every
 # single run — and after nine dark editions the curator would be REQUIRED to ship
 # a Mavericks item in the middle of the offseason, from nothing but other teams'
-# news. For these, supply counts only candidates whose title actually names them.
+# news. For these, supply counts only candidates whose title actually names them,
+# or that come from the team's own site (whose headlines often name only players).
 MATCH = {
     "MAVERICKS": re.compile(r"\bmav(ericks|s)\b", re.I),
 }
+MATCH_SRC = {
+    "MAVERICKS": {"Mavs Moneyball"},
+}
 
-# Editions dark before the bar moves. Roughly: NUDGE is four days of mornings,
-# FLOOR is a week and a half. Both are deliberately slow — the point is to catch
-# permanent absence, not to reshuffle a normal quiet stretch.
-NUDGE = 4
-FLOOR = 9
+# Editions dark before the bar moves, counted in EDITIONS: about 12 a week, a
+# morning every day and an afternoon each weekday. NUDGE 8 is four to five days,
+# FLOOR 18 a week and a half. These were 4 and 9 under a comment that read them as
+# mornings, so "required" arrived in about four weekdays: MAVERICKS went from 1 to
+# 9 between 2026-10-07 and 10-12. Both are deliberately slow — the point is to
+# catch permanent absence, not to reshuffle a normal quiet stretch.
+NUDGE = 8
+FLOOR = 18
 
 
 def norm(s: str) -> str:
     return html.unescape(s or "").strip().upper()
+
+
+def counts_for(block: str, it: dict) -> bool:
+    """Whether a candidate is supply for a tracked block. Satire never is."""
+    if it.get("satire") or it.get("section") not in TRACKED.get(block, ()):
+        return False
+    if block in MATCH:
+        return bool(MATCH[block].search(it.get("title") or "")) \
+            or it.get("src") in MATCH_SRC.get(block, ())
+    return True
 
 
 def load_state() -> dict:
@@ -69,21 +92,20 @@ def load_state() -> dict:
 
 
 def prep(cand_path: str) -> None:
+    # Imported here so --record never depends on the collector importing cleanly.
+    from collect import write_candidates
+
     st = load_state()
     cand = json.load(open(cand_path))
-    have = cand.get("by_section", {})
+    items = [it for it in cand.get("items") or [] if isinstance(it, dict)]
 
     attention = []
-    for block, feeders in TRACKED.items():
+    for block in TRACKED:
         dark = int(st.get("dark", {}).get(block, 0))
         if dark < NUDGE:
             continue
-        if block in MATCH:
-            supply = sum(1 for it in cand.get("items", [])
-                         if it.get("section") in feeders
-                         and MATCH[block].search(it.get("title", "")))
-        else:
-            supply = sum(have.get(f, 0) for f in feeders)
+        # Counted from the items, not by_section, so satire is left out.
+        supply = sum(1 for it in items if counts_for(block, it))
         if supply == 0:
             # Nothing to work with. Not the curator's problem this run.
             print(f"  {block}: dark {dark} editions but no candidates — skipping")
@@ -98,25 +120,45 @@ def prep(cand_path: str) -> None:
               f"{'REQUIRED' if dark >= FLOOR else 'elevated'}")
 
     cand["attention"] = attention
-    with open(cand_path, "w") as f:
-        json.dump(cand, f, indent=1)
+    write_candidates(cand_path, cand)   # attention near the top, not after the items
     if not attention:
         print("  no sections in drought")
 
 
-def record(issue_path: str) -> None:
-    st = load_state()
+def satire_urls(cand_path: str) -> set:
+    """Links the collector flagged as satire. candidates.json is still in the
+    workspace when the issue is recorded; without it nothing is excluded."""
+    try:
+        return {it["url"] for it in json.load(open(cand_path)).get("items") or []
+                if isinstance(it, dict) and it.get("satire") and it.get("url")}
+    except Exception as e:
+        print(f"  {cand_path} unreadable ({type(e).__name__}) — satire not excluded")
+        return set()
+
+
+def record(issue_path: str, cand_path: str) -> None:
     issue = json.load(open(issue_path))
+    if issue.get("_fallback"):
+        print("  fallback edition — nothing recorded: an unranked feed dump says "
+              "nothing about which blocks the curator would have shipped")
+        return
+    st = load_state()
+    satire = satire_urls(cand_path)
+
+    def real(items) -> bool:
+        return any(isinstance(i, dict) and i.get("url") not in satire
+                   for i in items or [])
 
     present = set()
-    for s in issue.get("sections", []):
-        title = norm(s.get("title"))
-        blocks = s.get("blocks", []) or []
-        if any(b.get("items") for b in blocks):
-            present.add(title)
-        for b in blocks:
-            if b.get("items"):
-                present.add(norm(b.get("label")))
+    for s in issue.get("sections") or []:
+        if not isinstance(s, dict):
+            continue
+        blocks = [b for b in s.get("blocks") or [] if isinstance(b, dict)]
+        shipped = [b for b in blocks if real(b.get("items"))]
+        if shipped:
+            present.add(norm(s.get("title")))
+        for b in shipped:
+            present.add(norm(b.get("label")))
 
     st["editions"] = int(st.get("editions", 0)) + 1
     dark = st.setdefault("dark", {})
@@ -145,7 +187,7 @@ def main() -> None:
     if a.prep:
         prep(a.candidates)
     elif a.record:
-        record(a.issue)
+        record(a.issue, a.candidates)
     else:
         ap.error("one of --prep or --record is required")
 
