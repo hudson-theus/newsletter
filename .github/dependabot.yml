@@ -1,0 +1,15 @@
+# The workflows pin their actions (claude-code-action by full commit SHA), so
+# nothing changes under the unattended pipeline without a commit. This is what
+# keeps those pins from going stale: bumps arrive as reviewable PRs, and a
+# send=false dispatch on the PR branch shows whether the new version still
+# curates and ships. Pillow is pinned inside compass.yml's run step, which
+# Dependabot does not read; bump it by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

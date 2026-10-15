@@ -1,26 +1,49 @@
 name: COMPASS
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && format('COMPASS {0} · {1}', inputs.edition, inputs.source)
+      || 'COMPASS · schedule' }}
 
-# GitHub's scheduled events are best-effort: on 2026-07-31 a run started 83 minutes
-# late, and on 2026-08-03 the run was dropped entirely and the morning edition never
-# went out. A single cron per edition cannot survive that.
+# Delivery is decoupled from execution. A run may start anywhere in its edition's
+# window; it builds the issue and then HOLDS the send until exactly 09:00 or
+# 14:00 CT, so the email lands on the minute however the runner was scheduled.
 #
-# Delivery is therefore decoupled from execution. Slots fire every 20 minutes across
-# a window starting an hour before the target; whichever one succeeds first builds
-# the issue and then HOLDS the send until exactly 09:00 or 14:00 CT. So the runner
-# may start anywhere in that window and the email still lands on the minute.
+# Who starts the runs. The Cloudflare Worker (worker/) is the only trigger that
+# fires on time: it dispatches this workflow at 08:15/08:45 and 13:15/13:45 CT
+# (source=worker), and dispatches watchdog.yml at 09:20/14:20 CT to verify the
+# edition shipped. GitHub's own crons below are a LAST RESORT for a dead Worker:
+# by October 2026 they ran about half their fires and started them 2-5 hours
+# late (no schedule run in 47 days started inside the morning window).
 #
-# The edition is chosen from the Chicago wall clock rather than from which cron
-# fired, so drift cannot misattribute a run — and no CDT/CST cron twins are needed.
-# A dated artifact marks a shipped edition so later slots stand down; a failed run
-# leaves no marker, so the next slot retries.
+# A dated artifact (compass-<ed>-<date>) marks a shipped edition. It is uploaded
+# by every run whose message the SMTP server accepted (publish.py leaves sent.ok
+# at that moment), even if something fails afterwards, so any later run of the
+# same edition stands down; a run that never sent leaves no marker, so the next
+# slot retries.
+#
+# Two jobs. "decide" has no concurrency group, so a run that only needs to stand
+# down never queues. "build" is grouped per edition and day: GitHub keeps one
+# running and one pending run per group and a newer pending run cancels the older
+# one, and when AM and PM shared a group a pending AM recovery could be replaced
+# by a PM dispatch while the PM held the group until 14:00 (2026-10-14 shows the
+# replacement chain). A build that waited behind a same-edition run re-checks the
+# marker before doing anything.
+#
+# Switches (repository variables):
+#   COMPASS_PAUSE = 'true'  stands down every automated run: the GitHub crons, the
+#                           Worker (source=worker) and the watchdog's recoveries
+#                           (source=watchdog). Manual dispatches still run. Unset
+#                           means run.
+#   COMPASS_SEND  = 'true'  lets the GitHub cron path send; otherwise a cron run is
+#                           a dry run. It does not gate dispatches, which carry
+#                           their own send input.
 on:
   schedule:
-    # BACKSTOP ONLY — the primary trigger is the Cloudflare Worker. Measured over
-    # 2026-08-11..27, GitHub dropped 12 of 112 scheduled fires (11%) and drifted
-    # every survivor between 12 and 129 minutes; on 08-27 all four morning fires
-    # were dropped outright. So these fire EARLY, and the windows below are wide
-    # enough that a fire arriving an hour late still ships the edition.
-    - cron: '10 13,14 * * *'     # 08:10 CT (one of the two matches, per DST)
+    # LAST RESORT ONLY (see above). Both hours of each pair are listed because
+    # GitHub cron is UTC and Chicago changes offset; the run picks its edition
+    # from the Chicago clock and stands down outside the windows, so whichever
+    # of a pair lands where it is useful is the one that builds.
+    - cron: '10 13,14 * * *'     # 08:10 CT
     - cron: '40 13,14 * * *'     # 08:40 CT
     - cron: '20 14,15 * * *'     # 09:20 CT
     - cron: '10 18,19 * * 1-5'   # 13:10 CT
@@ -41,125 +64,248 @@ on:
         description: Build even if today's edition already shipped
         type: boolean
         default: false
+      source:
+        description: Who dispatched this (manual, worker or watchdog)
+        type: string
+        default: manual
 
 permissions:
-  contents: write   # the drought-state commit doubles as the cron keepalive
+  contents: write   # the section-coverage state commit
   id-token: write   # claude-code-action authenticates via OIDC
-  actions: read     # to see whether today's edition already shipped
+  actions: read     # shipped-markers and earlier editions are artifacts
+  issues: write     # alert.py's second channel: the "COMPASS alerts" issue
 
-concurrency:
-  # Two sweep slots must never build the same edition at once.
-  group: compass-${{ github.ref }}
-  cancel-in-progress: false
+env:
+  # Python block-buffers stdout into a pipe. publish.py's whole log, including
+  # "built at 13:00:54 — holding 59.1 min", appeared at 19:00:02Z on 2026-10-14:
+  # nothing was visible during the hour-long hold.
+  PYTHONUNBUFFERED: "1"
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+  decide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      skip: ${{ steps.cfg.outputs.skip }}
+      edition: ${{ steps.cfg.outputs.edition }}
+      date: ${{ steps.cfg.outputs.date }}
+      send: ${{ steps.cfg.outputs.send }}
+      force: ${{ steps.cfg.outputs.force }}
+      source: ${{ steps.cfg.outputs.source }}
+      artifact: ${{ steps.cfg.outputs.artifact }}
+      at: ${{ steps.cfg.outputs.at }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      # The only third-party dependency in the repo, and it is deliberately
-      # optional: art.py renders the covers with it and ships the issue plain
-      # without it. A PyPI outage costs the motion, never the edition.
-      - name: Install the renderer
-        continue-on-error: true
-        run: pip install --disable-pip-version-check --quiet Pillow
-
       - name: Decide whether to build
         id: cfg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          IN_EDITION: ${{ inputs.edition }}
+          IN_SEND: ${{ inputs.send }}
+          IN_FORCE: ${{ inputs.force }}
+          IN_SOURCE: ${{ inputs.source }}
+          COMPASS_SEND: ${{ vars.COMPASS_SEND }}
+          COMPASS_PAUSE: ${{ vars.COMPASS_PAUSE }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ED="${{ inputs.edition }}"
-            [ "${{ inputs.send }}" = "true" ] && SEND="--send" || SEND=""
-            echo "manual run: edition=$ED"
+          TODAY=$(TZ=America/Chicago date +%F)
+          FORCE=false
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            SOURCE="${IN_SOURCE:-manual}"
+          else
+            SOURCE=schedule
+          fi
+
+          # The pause switch. Anything not dispatched by hand is automated, so an
+          # unknown source stands down too rather than slipping past the switch.
+          if [ "$SOURCE" != "manual" ] && [ "$COMPASS_PAUSE" = "true" ]; then
+            echo "::notice::COMPASS_PAUSE is 'true' — $SOURCE run standing down."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            ED="$IN_EDITION"
+            [ "$IN_SEND" = "true" ] && SEND="--send" || SEND=""
+            [ "$IN_FORCE" = "true" ] && FORCE=true
+            echo "dispatched run ($SOURCE): edition=$ED send=${SEND:-no} force=$FORCE"
           else
             # Edition comes from the Chicago wall clock, not from which cron fired,
             # so drift cannot misattribute a run to the wrong edition.
             HHMM=$(TZ=America/Chicago date +%H%M)
             DOW=$(TZ=America/Chicago date +%u)
             ED=""
-            # Sweep starts an hour before the target so several slots get a chance
-            # to build before the send time, and continues past it so a run that
-            # starts late still delivers (late) rather than not at all.
-            # These windows are deliberately wide. On 2026-08-26 both afternoon
-            # crons were dropped and two later fires DID start — at 16:10 and
-            # 16:48 CT — but the old window ended at 15:20, so both computed an
-            # empty edition and stood down. A late edition was available and was
-            # thrown away. Late beats never.
-            if [ "$HHMM" -ge 0700 ] && [ "$HHMM" -le 1145 ]; then
+            # Each window opens an hour before the send and stays open well past
+            # it: late beats never (on 2026-08-26 two afternoon fires started at
+            # 16:10 and 16:48 CT and found the old 15:20 window shut). The opening
+            # used to be two hours early, and drifted crons that landed at
+            # 12:00-12:55 built most September PMs with 65-119 minute holds
+            # against a 120-minute job timeout; on Sep 11 the timeout killed a
+            # run four seconds after it sent. One hour caps the hold and keeps
+            # the news fresh, and every intended cron slot (08:10-09:20,
+            # 13:10-14:20) still falls inside. Dispatches skip this clock check.
+            if [ "$HHMM" -ge 0800 ] && [ "$HHMM" -le 1145 ]; then
               ED=am
-            elif [ "$HHMM" -ge 1200 ] && [ "$HHMM" -le 1645 ] && [ "$DOW" -le 5 ]; then
+            elif [ "$HHMM" -ge 1300 ] && [ "$HHMM" -le 1645 ] && [ "$DOW" -le 5 ]; then
               ED=pm
             fi
             if [ -z "$ED" ]; then
               echo "Chicago time $HHMM is outside both edition windows — nothing to do."
               echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
             fi
-            [ "${{ vars.COMPASS_SEND }}" = "true" ] && SEND="--send" || SEND=""
+            [ "$COMPASS_SEND" = "true" ] && SEND="--send" || SEND=""
           fi
 
-          # Already shipped today? Each successful run leaves a dated artifact, so
-          # later sweep slots see it and stand down. A failed run leaves none, which
-          # is what lets the next slot retry.
-          TODAY=$(TZ=America/Chicago date +%F)
+          # Already shipped today? Looked up by exact name, retried, with the
+          # error kept. This used to be `2>/dev/null || echo 0`: one API hiccup
+          # read as "not shipped" and re-sent the edition, with nothing in the log.
+          # A lookup that keeps failing now FAILS the run: no build, no send, and
+          # the next slot (or the watchdog) tries again. A duplicate is worse than
+          # a retry.
           NAME="compass-$ED-$TODAY"
-          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-                   --jq "[.artifacts[] | select(.name==\"$NAME\" and .expired==false)] | length" \
-                   2>/dev/null || echo 0)
-          if [ "${{ inputs.force }}" != "true" ] && [ "$COUNT" -gt 0 ]; then
-            echo "$NAME already exists — today's $ED edition has shipped. Standing down."
-            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          if [ "$FORCE" != "true" ]; then
+            COUNT=""
+            for TRY in 1 2 3; do
+              if COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${NAME}&per_page=100" \
+                           --jq '[.artifacts[] | select(.expired==false)] | length'); then
+                break
+              fi
+              COUNT=""
+              echo "artifact lookup for $NAME failed (try $TRY/3)"
+              [ "$TRY" -lt 3 ] && sleep $((TRY * 15))
+            done
+            if [ -z "$COUNT" ]; then
+              echo "::error::could not tell whether $NAME shipped — not building, so it cannot be sent twice"
+              exit 1
+            fi
+            if [ "$COUNT" -gt 0 ]; then
+              echo "$NAME already exists — today's $ED edition has shipped. Standing down."
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
           fi
 
-          # Exact delivery times. The runner may start anywhere in the sweep;
-          # publish.py holds the send until this Chicago time.
+          # Exact delivery times. publish.py holds the send until this Chicago time.
           [ "$ED" = "am" ] && AT=09:00 || AT=14:00
           echo "building $ED (artifact $NAME, send at $AT CT)"
           {
-            echo "skip=false"; echo "edition=$ED"; echo "send=$SEND"
-            echo "artifact=$NAME"; echo "at=$AT"
+            echo "skip=false"; echo "edition=$ED"; echo "date=$TODAY"; echo "send=$SEND"
+            echo "force=$FORCE"; echo "source=$SOURCE"; echo "artifact=$NAME"; echo "at=$AT"
           } >> "$GITHUB_OUTPUT"
 
+  build:
+    needs: decide
+    if: needs.decide.outputs.skip == 'false'
+    runs-on: ubuntu-24.04
+    # A dispatch can arrive up to ~2 h before its send time, curation is capped at
+    # 42 minutes (below), and the job must outlive the hold plus the post-send
+    # steps. 120 was the gap from window open to send exactly, which is how the
+    # Sep 11 run was killed four seconds after sending.
+    timeout-minutes: 150
+    concurrency:
+      group: compass-${{ needs.decide.outputs.edition }}-${{ needs.decide.outputs.date }}
+      cancel-in-progress: false
+    env:
+      ED: ${{ needs.decide.outputs.edition }}
+      TODAY: ${{ needs.decide.outputs.date }}
+      SEND: ${{ needs.decide.outputs.send }}
+      AT: ${{ needs.decide.outputs.at }}
+      SOURCE: ${{ needs.decide.outputs.source }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # This job may have waited in its concurrency group behind another run of
+      # the same edition (the Worker's 08:45 dispatch always queues behind its
+      # 08:15 one). If that run shipped meanwhile, stand down here; only
+      # force=true builds past an existing marker. Same fail-closed lookup as in
+      # decide.
+      - name: Re-check the shipped-marker
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ needs.decide.outputs.force }}
+          NAME: ${{ needs.decide.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          if [ "$FORCE" = "true" ]; then
+            echo "force=true — building regardless of $NAME"; echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          COUNT=""
+          for TRY in 1 2 3; do
+            if COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${NAME}&per_page=100" \
+                         --jq '[.artifacts[] | select(.expired==false)] | length'); then
+              break
+            fi
+            COUNT=""
+            echo "artifact lookup for $NAME failed (try $TRY/3)"
+            [ "$TRY" -lt 3 ] && sleep $((TRY * 15))
+          done
+          if [ -z "$COUNT" ]; then
+            echo "::error::could not tell whether $NAME shipped — not building, so it cannot be sent twice"
+            exit 1
+          fi
+          if [ "$COUNT" -gt 0 ]; then
+            echo "$NAME shipped while this run waited its turn. Standing down."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.go == 'true'
+        with:
+          python-version: '3.12'
+
+      # The only third-party dependency in the repo, and it is deliberately
+      # optional: art.py renders the covers with it and ships the issue plain
+      # without it. A PyPI outage costs the motion, never the edition. Pinned so
+      # a new release cannot change the art on an unattended morning; Dependabot
+      # does not watch pip installs in workflow files, so bump this by hand.
+      - name: Install the renderer
+        if: steps.gate.outputs.go == 'true'
+        continue-on-error: true
+        run: pip install --disable-pip-version-check --quiet Pillow==12.3.0
+
       # The previous days' shipped issues, so collect.py can drop anything that
-      # already ran. The shipped-markers are these same artifacts and are kept 7
-      # days, which covers the longest lookback in collect.py (6). Never fails the
-      # run: with nothing here the filter is simply empty, as it was before.
+      # already ran, and for the afternoon edition this morning's issue too:
+      # the PM is "what changed since this morning", so it has to know what the
+      # morning said (collect.py lists it as this_morning; same-day items stay in
+      # the pool as possible follow-ups). The shipped-markers are these same
+      # artifacts, kept 7 days, which covers the longest lookback in collect.py
+      # (6). Never fails the run: with nothing here the filter is simply empty.
       - name: Fetch earlier editions
-        if: steps.cfg.outputs.skip == 'false'
+        if: steps.gate.outputs.go == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           mkdir -p prior
-          TODAY=$(TZ=America/Chicago date +%F)
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+          # --paginate: the listing also holds rejected-*, failed-* and preview-*
+          # artifacts, and nothing guarantees a week of markers fits one page.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
             --jq '.artifacts[] | select(.expired==false) | select(.name|test("^compass-(am|pm)-[0-9]{4}-[0-9]{2}-[0-9]{2}$")) | "\(.id) \(.name)"' |
           while read -r ID NAME; do
-            [[ "${NAME: -10}" < "$TODAY" ]] || continue
+            if [[ "${NAME: -10}" < "$TODAY" ]]; then
+              :
+            elif [ "$ED" = "pm" ] && [ "$NAME" = "compass-am-$TODAY" ]; then
+              echo "this morning's edition: $NAME"
+            else
+              continue
+            fi
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/$ID/zip" > "prior/$ID.zip" &&
               unzip -q -o "prior/$ID.zip" issue.json candidates.json -d "prior/$NAME-$ID" ||
               echo "could not fetch $NAME"
             rm -f "prior/$ID.zip"
           done
-          echo "earlier editions on hand: $(ls prior | wc -l)"
+          echo "earlier editions on hand: $(find prior -mindepth 1 -maxdepth 1 | wc -l)"
 
       - name: Collect candidates
-        if: steps.cfg.outputs.skip == 'false'
-        run: python scripts/collect.py --edition "${{ steps.cfg.outputs.edition }}"
+        if: steps.gate.outputs.go == 'true'
+        run: python scripts/collect.py --edition "$ED"
 
       # Never fails the run. A snapshot missing a series costs those numbers; it
       # must not cost the edition.
       - name: Collect market numbers
-        if: steps.cfg.outputs.skip == 'false'
+        if: steps.gate.outputs.go == 'true'
         continue-on-error: true
         run: python scripts/market.py
 
@@ -167,7 +313,7 @@ jobs:
       # lowers their bar. Never fails the run: a missing attention list just means
       # the curator is not nudged this time.
       - name: Flag sections that have gone dark
-        if: steps.cfg.outputs.skip == 'false'
+        if: steps.gate.outputs.go == 'true'
         continue-on-error: true
         run: python scripts/sections.py --prep
 
@@ -178,104 +324,183 @@ jobs:
       #
       # Every attempt is capped, because a hang is as damaging as a failure and
       # the ladder cannot react to one. On 2026-09-04 attempt 1 ran 44 minutes
-      # before reporting is_error; attempt 2 then produced a clean issue in 12,
-      # but 09:00 CT had passed and the edition went out 15 minutes late. The job
-      # timeout is 120 minutes and never applied. A healthy curate measures
-      # 10-12 minutes, so 15 is generous; 15 + 60s + 15 + 180s + 8 = 42 minutes,
-      # which still fits inside the 45-minute sweep lead with collection's ~2.5
-      # minutes ahead of it. Even three timed-out attempts now reach fallback.py
-      # in time to send on the minute.
+      # before reporting is_error. A healthy curate now takes about two minutes
+      # (127,795 ms over 13 turns on 2026-10-14; it was 10-12 minutes in
+      # August), so the 15/15/8 caps are hang guards, not budgets. Worst case
+      # 15 + 1 + 15 + 3 + 8 = 42 minutes plus ~2.5 of collection still reaches
+      # fallback.py before the send when the run starts with the Worker's first
+      # slot, 45 minutes ahead.
       #
       # Retries are gated on the CHECK after each attempt, not on the attempt's
       # own outcome. On 2026-10-09 attempt 1 exited 0 in 107 seconds without a
       # usable issue.json; the old gates saw "success", skipped attempts 2 and 3,
       # and the afternoon edition shipped unedited. A timed-out or failed attempt
       # leaves no valid file, so the check catches that case too. A rejected file
-      # is moved into rejected/ with the reason, so the next attempt starts clean
-      # and the run keeps the evidence.
+      # is moved into rejected/ with the reason (and a summary of the attempt in
+      # place of the raw transcript, which must not be uploaded from a public
+      # repo), so the next attempt starts clean and the run keeps the evidence.
+      #
+      # Pinned, not floating. @v1 resolved to a different commit on 10-09 and
+      # 10-14 and silently moved the Claude Code CLI with it; Dependabot now
+      # proposes bumps as reviewable PRs. The model is pinned for the same
+      # reason: it used to be whatever the action defaulted to.
+      #
+      # The curator may edit ONE file. Its input is third-party headlines (press
+      # wires included) in a public repo, and the steps after it run repo code
+      # holding the Gmail app password and a token that can push to main; bare
+      # Write/Edit let it rewrite any of that code. Per Claude Code's permission
+      # rules (https://code.claude.com/docs/en/permissions#read-and-edit), Edit
+      # rules cover every built-in file-editing tool including Write, a Write(path)
+      # rule is accepted but never consulted, and a leading "/" in a CLI rule
+      # anchors at the working directory, so Edit(/issue.json) matches the root
+      # issue.json and nothing else ("./issue.json" would be a bare filename,
+      # which gitignore semantics match at any depth). Quoted because the action
+      # parses claude_args like a shell and "(" is an operator there.
       - name: Curate issue (attempt 1)
         id: curate1
         timeout-minutes: 15
-        if: steps.cfg.outputs.skip == 'false'
+        if: steps.gate.outputs.go == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1 (2026-10-14)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Read prompts/curate.md and follow it exactly. The edition is
-            "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
+            "${{ needs.decide.outputs.edition }}". Write issue.json in the repo root.
           claude_args: |
+            --model claude-sonnet-5-5
             --max-turns 120
-            --allowedTools Read,Write,Edit,Glob,Grep
+            --allowedTools "Read,Glob,Grep,Edit(/issue.json)"
+
+      # Turns, cost, and every refused tool call with its input. The curator ran
+      # blind: 4-5 permission denials per run and no way to see which tool it
+      # wanted. Printed before the check, which deletes a rejected attempt's log.
+      - name: Summarize attempt 1
+        if: always() && steps.curate1.outcome != 'skipped'
+        continue-on-error: true
+        run: python scripts/curator_summary.py --label attempt1 --markdown
 
       - name: Check attempt 1
         id: check1
-        if: steps.cfg.outputs.skip == 'false'
+        if: steps.gate.outputs.go == 'true'
         continue-on-error: true
         run: |
           python scripts/check_issue.py --reject-to rejected --label attempt1 \
             --log "$RUNNER_TEMP/claude-execution-output.json"
 
       - name: Back off before retry
-        if: steps.cfg.outputs.skip == 'false' && steps.check1.outcome == 'failure'
+        if: steps.gate.outputs.go == 'true' && steps.check1.outcome == 'failure'
         run: sleep 60
 
       - name: Curate issue (attempt 2)
         id: curate2
         timeout-minutes: 15
-        if: steps.cfg.outputs.skip == 'false' && steps.check1.outcome == 'failure'
+        if: steps.gate.outputs.go == 'true' && steps.check1.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1 (2026-10-14)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Read prompts/curate.md and follow it exactly. The edition is
-            "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
+            "${{ needs.decide.outputs.edition }}". Write issue.json in the repo root.
           claude_args: |
+            --model claude-sonnet-5-5
             --max-turns 120
-            --allowedTools Read,Write,Edit,Glob,Grep
+            --allowedTools "Read,Glob,Grep,Edit(/issue.json)"
+
+      - name: Summarize attempt 2
+        if: always() && steps.curate2.outcome != 'skipped'
+        continue-on-error: true
+        run: python scripts/curator_summary.py --label attempt2 --markdown
 
       - name: Check attempt 2
         id: check2
-        if: steps.cfg.outputs.skip == 'false' && steps.check1.outcome == 'failure'
+        if: steps.gate.outputs.go == 'true' && steps.check1.outcome == 'failure'
         continue-on-error: true
         run: |
           python scripts/check_issue.py --reject-to rejected --label attempt2 \
             --log "$RUNNER_TEMP/claude-execution-output.json"
 
       - name: Back off before final retry
-        if: steps.cfg.outputs.skip == 'false' && steps.check2.outcome == 'failure'
+        if: steps.gate.outputs.go == 'true' && steps.check2.outcome == 'failure'
         run: sleep 180
 
       - name: Curate issue (attempt 3)
         id: curate3
         timeout-minutes: 8
-        if: steps.cfg.outputs.skip == 'false' && steps.check2.outcome == 'failure'
+        if: steps.gate.outputs.go == 'true' && steps.check2.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1 (2026-10-14)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Read prompts/curate.md and follow it exactly. The edition is
-            "${{ steps.cfg.outputs.edition }}". Write issue.json in the repo root.
+            "${{ needs.decide.outputs.edition }}". Write issue.json in the repo root.
           claude_args: |
+            --model claude-sonnet-5-5
             --max-turns 120
-            --allowedTools Read,Write,Edit,Glob,Grep
+            --allowedTools "Read,Glob,Grep,Edit(/issue.json)"
+
+      - name: Summarize attempt 3
+        if: always() && steps.curate3.outcome != 'skipped'
+        continue-on-error: true
+        run: python scripts/curator_summary.py --label attempt3 --markdown
 
       - name: Check attempt 3
         id: check3
-        if: steps.cfg.outputs.skip == 'false' && steps.check2.outcome == 'failure'
+        if: steps.gate.outputs.go == 'true' && steps.check2.outcome == 'failure'
         continue-on-error: true
         run: |
           python scripts/check_issue.py --reject-to rejected --label attempt3 \
             --log "$RUNNER_TEMP/claude-execution-output.json"
+
+      # Belt and braces for the permission scoping above: whatever the curator
+      # was or was not allowed to do, nothing it wrote outside issue.json reaches
+      # the steps that hold secrets. Runs before fallback.py, publish.py and
+      # sections.py execute any repo code. Anything changed or added besides this
+      # run's own outputs is reverted, with a warning and an alert; the edition
+      # still ships. .claude/ is removed even when ignored, because Claude Code
+      # loads project settings from it (settingSources includes "project"), so a
+      # file written there by attempt 1 would widen attempts 2 and 3. Ignored
+      # files survive git clean without -x; the -e list keeps this run's outputs
+      # even if .gitignore stops listing them.
+      - name: Guard the workspace after curation
+        if: steps.gate.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          OUTPUTS='^\?\? (issue\.json|candidates\.json|market\.json|market_series\.json|prior/|rejected/)'
+          CHANGES=$(git status --porcelain=v1 --untracked-files=all | grep -Ev "$OUTPUTS" || true)
+          if [ -e .claude ]; then
+            CHANGES=$(printf '%s\n%s' "$CHANGES" "!! .claude/ exists")
+          fi
+          CHANGES=$(printf '%s\n' "$CHANGES" | sed '/^$/d')
+          if [ -z "$CHANGES" ]; then
+            echo "workspace clean: curation changed nothing but its outputs"
+            exit 0
+          fi
+          echo "::warning::curation left changes outside issue.json — restoring the checkout"
+          printf '%s\n' "$CHANGES"
+          # Restore first, then alert: alert.py is repo code too.
+          git checkout -- .
+          git clean -fdq -e rejected/ -e prior/ -e issue.json -e candidates.json \
+            -e market.json -e market_series.json
+          rm -rf .claude
+          find . -path ./prior -prune -o -name __pycache__ -type d -prune -exec rm -rf {} +
+          python scripts/alert.py "COMPASS $ED: curation touched files outside issue.json" \
+            "$(printf 'Restored before publishing. Changes found:\n%s\n\nRun: %s\n' "$CHANGES" "$RUN_URL")" || true
 
       # A curated issue.json that is missing, empty, or unparseable is treated the
       # same as a failed step: fall back rather than ship nothing. The check prints
       # why, rather than sending it to /dev/null as this step used to.
       - name: Fall back to an unedited issue if curation never produced one
         id: fallback
-        if: steps.cfg.outputs.skip == 'false'
+        if: steps.gate.outputs.go == 'true'
         run: |
           if python scripts/check_issue.py; then
             echo "curated issue.json is present and usable"
@@ -285,50 +510,78 @@ jobs:
             echo "used=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # publish.py leaves sent.ok (and sent=true in this step's outputs) the
+      # moment the SMTP server accepts the message, and writes the exact MIME it
+      # sent to issue_<date>_<ed>.eml.
       - name: Verify and publish
-        if: steps.cfg.outputs.skip == 'false'
+        id: publish
+        if: steps.gate.outputs.go == 'true'
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT: ${{ secrets.RECIPIENT }}
         run: |
-          python scripts/publish.py \
-            --edition "${{ steps.cfg.outputs.edition }}" \
-            --send-at "${{ steps.cfg.outputs.at }}" \
-            ${{ steps.cfg.outputs.send }}
+          python scripts/publish.py --edition "$ED" --send-at "$AT" ${SEND:+--send}
 
-      # Only on full success AND only when this run actually sent. The artifact is
-      # the "already shipped" marker every other trigger stands down on, so a
-      # partial run must not leave one behind or the next slot won't retry — and a
-      # send=false dry run must not leave one either, or it silently cancels the
-      # real edition. A dry run wrote one on 2026-08-28 and only escaped doing harm
-      # because that morning's edition had already gone out.
+      # The artifact is the "already shipped" marker every other trigger stands
+      # down on. It is written whenever this run SENT, whatever failed before or
+      # after, and never otherwise. It used to need success(): a failure after
+      # the send (a QUIT that did not answer 221, an artifact-service error, the
+      # job timeout) left no marker and every later slot sent the edition again.
+      # On Sep 11 the timeout fired four seconds after a send. And a send=false
+      # dry run must never leave one, or it silently cancels the real edition
+      # (2026-08-28). market.json is kept so a printed number can be audited.
       - name: Mark shipped
-        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != ''
-        uses: actions/upload-artifact@v4
+        id: mark
+        if: always() && steps.gate.outputs.go == 'true' && env.SEND != '' && hashFiles('sent.ok') != ''
+        # The second attempt below decides the job's fate, not this one.
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.cfg.outputs.artifact }}
+          name: ${{ needs.decide.outputs.artifact }}
           path: |
             issue_*.html
             issue_*.gif
+            issue_*.eml
             issue.json
             candidates.json
+            market.json
+            market_series.json
           if-no-files-found: warn
           retention-days: 7
+
+      # One more try: a missing marker after a send means a duplicate edition.
+      - name: Mark shipped (second attempt)
+        id: mark2
+        if: always() && steps.mark.outcome == 'failure'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ needs.decide.outputs.artifact }}
+          path: |
+            issue_*.html
+            issue_*.gif
+            issue_*.eml
+            issue.json
+            candidates.json
+            market.json
+            market_series.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
 
       # Shipping the fallback is not a miss, so the watchdog never sees it: the
       # shipped-marker exists. Without this the reader is the only one who
       # notices, as on 2026-10-09.
       - name: Say so if the edition shipped unedited
-        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != '' && steps.fallback.outputs.used == 'true'
+        if: always() && steps.gate.outputs.go == 'true' && hashFiles('sent.ok') != '' && steps.fallback.outputs.used == 'true'
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT: ${{ secrets.RECIPIENT }}
-          ED: ${{ steps.cfg.outputs.edition }}
-          REPO: ${{ github.repository }}
           RUN: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           REASONS=$(cat rejected/reasons.txt 2>/dev/null || echo "no curation attempt left a reason")
           BODY=$(cat <<EOF
@@ -338,17 +591,18 @@ jobs:
           $REASONS
 
           Rejected output: artifact rejected-$RUN
-          Run log: https://github.com/$REPO/actions/runs/$RUN
+          Run log: $RUN_URL
           EOF
           )
           python scripts/alert.py "COMPASS $ED shipped unedited" "$BODY"
 
-      # Every rejected curation attempt, with its execution log. On 2026-10-09
-      # the rejected file was overwritten by the fallback and the reason was
-      # lost; this is what makes the next one diagnosable.
+      # Every rejected curation attempt, with a summary of its execution log
+      # (not the raw transcript: the repo is public). On 2026-10-09 the rejected
+      # file was overwritten by the fallback and the reason was lost; this is
+      # what makes the next one diagnosable.
       - name: Keep rejected curation output
-        if: always() && steps.cfg.outputs.skip == 'false' && hashFiles('rejected/**') != ''
-        uses: actions/upload-artifact@v4
+        if: always() && steps.gate.outputs.go == 'true' && hashFiles('rejected/**') != ''
+        uses: actions/upload-artifact@v6
         with:
           name: rejected-${{ github.run_id }}
           path: rejected/
@@ -358,61 +612,106 @@ jobs:
       # A run that does not send leaves no shipped-marker (see above), so without
       # this a dry run would produce nothing to look at.
       - name: Keep dry-run preview
-        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send == ''
-        uses: actions/upload-artifact@v4
+        if: success() && steps.gate.outputs.go == 'true' && env.SEND == ''
+        uses: actions/upload-artifact@v6
         with:
-          name: preview-${{ steps.cfg.outputs.edition }}-${{ github.run_id }}
+          name: preview-${{ needs.decide.outputs.edition }}-${{ github.run_id }}
           path: |
             issue_*.html
             issue_*.gif
             issue.json
             candidates.json
             market.json
+            market_series.json
           if-no-files-found: warn
           retention-days: 3
 
       # Records which tracked blocks shipped, so a subsection that keeps landing
       # just below the bar escalates instead of silently never appearing. The
-      # commit is also what keeps the repo active: GitHub disables scheduled
-      # workflows after 60 days without a push, which would have silently killed
-      # the cron backstop around 2026-10-03.
+      # commit is also the primary keepalive: GitHub disables scheduled workflows
+      # in a public repo after 60 days without a push.
       #
-      # The push names its remote explicitly rather than relying on the checkout
-      # credential, which is no longer valid by the time this step runs:
-      # claude-code-action replaces the stored auth header with its own GitHub
-      # App token and revokes that token in a post-step. Every edition from
-      # 2026-08-28 onward committed and then failed to push with "Invalid
-      # username or token", swallowed by continue-on-error, so state/sections.json
-      # sat a week stale and the keepalive silently stopped. GITHUB_TOKEN carries
-      # the contents:write granted above and is unaffected by the revocation.
+      # Not for a fallback edition: an unranked feed dump says nothing about the
+      # curator, and on 2026-10-09 it "broke" an IPO drought with press releases
+      # and pushed five other counters a tick (sections.py also refuses an issue
+      # marked _fallback, for manual runs).
+      #
+      # The checkout is depth 1 and up to two hours old by now, and AM and PM
+      # runs can overlap, so the push is rebuilt on the current main each time:
+      # fetch, reset to it, re-record from this run's issue.json, commit, push.
+      # A rebase would conflict exactly when the intervening commit is the other
+      # edition's own state record. The remote is named explicitly because
+      # claude-code-action revokes the checkout's credential (every push from
+      # 2026-08-28 failed with "Invalid username or token" for a week, unseen).
       - name: Record section coverage
-        if: success() && steps.cfg.outputs.skip == 'false' && steps.cfg.outputs.send != ''
+        if: success() && steps.gate.outputs.go == 'true' && env.SEND != '' && steps.fallback.outputs.used != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+          REF: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -euo pipefail
-          python scripts/sections.py --record
-          if ! git diff --quiet -- state/sections.json; then
-            git config user.name  "compass-bot"
-            git config user.email "compass-bot@users.noreply.github.com"
-            git add state/sections.json
-            git commit -m "state: section coverage after ${{ steps.cfg.outputs.edition }} $(date -u +%F)"
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
-              "HEAD:${{ github.ref_name }}"
-          else
-            echo "no coverage change to record"
-          fi
+          set -uo pipefail
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name  "compass-bot"
+          git config user.email "compass-bot@users.noreply.github.com"
+          for TRY in 1 2 3; do
+            if git fetch -q --depth=1 "$REMOTE" "$REF" && git reset -q --hard FETCH_HEAD &&
+               python scripts/sections.py --record; then
+              if git diff --quiet -- state/sections.json; then
+                echo "no coverage change to record"; exit 0
+              fi
+              if git add state/sections.json &&
+                 git commit -q -m "state: section coverage after $ED $TODAY" &&
+                 git push -q "$REMOTE" "HEAD:$REF"; then
+                echo "recorded and pushed (try $TRY)"; exit 0
+              fi
+            fi
+            echo "state push failed (try $TRY/3)"
+            [ "$TRY" -lt 3 ] && sleep $((TRY * 20))
+          done
+          echo "::warning::section coverage for $ED $TODAY was not recorded — state/sections.json misses this edition"
+          python scripts/alert.py "COMPASS $ED: coverage state not pushed" \
+            "The $ED edition for $TODAY shipped, but state/sections.json could not be pushed after 3 tries. Run: $RUN_URL" || true
 
       - name: Keep failure output for debugging
-        if: failure() && steps.cfg.outputs.skip == 'false'
-        uses: actions/upload-artifact@v4
+        if: failure() && steps.gate.outputs.go == 'true'
+        uses: actions/upload-artifact@v6
         with:
           name: failed-${{ github.run_id }}
           path: |
             issue_*.html
             issue_*.gif
+            issue_*.eml
             issue.json
             candidates.json
+            market.json
+            market_series.json
           if-no-files-found: ignore
           retention-days: 7
+
+      # A hard failure used to be visible only as a red run. Say so on both
+      # channels, and say whether the email went out before it failed: a sent
+      # edition with no marker is a duplicate waiting to happen.
+      - name: Say so if this run failed
+        if: failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+          MARKED: ${{ steps.mark.outcome }}
+          MARKED2: ${{ steps.mark2.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -e sent.ok ]; then
+            STATE="The email WAS sent before the failure (shipped-marker upload: ${MARKED:-not run}${MARKED2:+, retry: $MARKED2})."
+          else
+            STATE="The email was NOT sent by this run. The next slot or the watchdog will retry."
+          fi
+          python3 scripts/alert.py "COMPASS $ED run failed ($SOURCE)" \
+            "$(printf 'The %s run for %s failed.\n%s\n\nRun: %s\n' "$ED" "$TODAY" "$STATE" "$RUN_URL")"

@@ -1,109 +1,251 @@
 name: COMPASS watchdog
+run-name: COMPASS watchdog · ${{ inputs.edition || 'due' }}
 
 # Nothing used to notice a missed edition. On 2026-08-26 the afternoon edition
 # never ran and on 08-27 the morning edition never ran; both were discovered by
 # the reader not receiving them, a day later.
 #
-# This runs after each edition's window has closed and asks one question: does a
-# shipped-marker exist for today? If not, it forces a build (late, but real) and
-# says so by email. A miss can no longer be silent, and it self-heals.
+# This asks, for each edition that should have shipped by now: does today's
+# shipped-marker exist? If not, it dispatches a recovery run and then WAITS for
+# the marker (up to 30 minutes), so the alert reports what actually happened
+# rather than promising an arrival. It also checks that the Cloudflare Worker,
+# the only on-time trigger, dispatched that edition: a Worker that stops (an
+# expired token, a bad deploy; it missed both 13:15Z and 18:15Z on 2026-10-13)
+# otherwise degrades every edition to the late GitHub crons with no signal.
+#
+# Who runs it. The Worker dispatches it at 09:20 and 14:20 CT with the edition
+# that was just due. The GitHub crons below are the backstop for a dead Worker,
+# and are late: by October 2026 they started 2-5 hours after their time, so the
+# "12:00 CT" fire landed between 14:00 and 18:30 CT. A late fire checks every
+# edition due by then, not one picked from the clock: the old rule made each
+# post-16:30 arrival check only the PM, and on 5 of 8 weekdays nothing ever
+# checked the morning edition.
+#
+# The recovery run is dispatched with force=false. The marker was missing when
+# this looked, so force adds nothing except skipping compass.yml's own re-check
+# when the run actually starts, and that re-check is what keeps a run that was
+# still in flight here (or a lookup that failed) from becoming a second email.
 on:
   schedule:
-    - cron: '0 17,18 * * *'     # 12:00 CT — after the morning window closes
-    - cron: '0 22,23 * * 1-5'   # 17:00 CT — after the afternoon window closes
+    - cron: '0 17,18 * * *'     # 12:00 CT — backstop only; arrives hours late
+    - cron: '0 22,23 * * 1-5'   # 17:00 CT — backstop only
   workflow_dispatch:
+    inputs:
+      edition:
+        description: Edition to verify (due = every edition due by now)
+        type: choice
+        options: [due, am, pm]
+        default: due
 
 permissions:
-  contents: write
-  actions: write
+  contents: write   # the keepalive commit
+  actions: write    # dispatch a recovery run of compass.yml
+  issues: write     # alert.py's second channel
 
 concurrency:
   group: compass-watchdog
   cancel-in-progress: false
 
+env:
+  PYTHONUNBUFFERED: "1"
+
 jobs:
   check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      # No setup-python: the watchdog runs only alert.py (standard library), and
+      # the runner image's python3 means one fewer step that can fail before the
+      # alert.
+      - uses: actions/checkout@v5
 
-      - name: Did today's edition ship?
+      - name: Check, recover, report
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IN_EDITION: ${{ inputs.edition }}
+          COMPASS_PAUSE: ${{ vars.COMPASS_PAUSE }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          TODAY=$(TZ=America/Chicago date +%F)
           HHMM=$(TZ=America/Chicago date +%H%M)
           DOW=$(TZ=America/Chicago date +%u)
-          TODAY=$(TZ=America/Chicago date +%F)
+          REPORT=watchdog_report.txt
+          : > "$REPORT"
+          note() { echo "$*"; echo "$*" >> "$REPORT"; }
+          now() { TZ=America/Chicago date +%H:%M; }
 
-          # Which edition should already exist by now?
-          if   [ "$HHMM" -ge 1145 ] && [ "$HHMM" -lt 1630 ]; then ED=am
-          elif [ "$HHMM" -ge 1630 ] && [ "$DOW" -le 5 ];     then ED=pm
-          else
-            echo "nothing is due to have shipped yet"; echo "miss=false" >> "$GITHUB_OUTPUT"; exit 0
+          # Paused on purpose: compass.yml would stand the recovery down anyway,
+          # and alerting about editions the owner switched off is noise.
+          if [ "$COMPASS_PAUSE" = "true" ]; then
+            echo "::notice::COMPASS_PAUSE is 'true' — the watchdog stands down."
+            echo "paused=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
-          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-                   --jq "[.artifacts[] | select(.name==\"compass-$ED-$TODAY\" and .expired==false)] | length" \
-                   2>/dev/null || echo 0)
-          if [ "$COUNT" -gt 0 ]; then
-            echo "compass-$ED-$TODAY shipped. Nothing to do."
-            echo "miss=false" >> "$GITHUB_OUTPUT"
+          # Which editions should exist by now. Explicit when the Worker sends
+          # one; otherwise everything due by the Chicago clock, with fifteen
+          # minutes after each send for the marker upload.
+          case "${IN_EDITION:-due}" in
+            am|pm) EDS="$IN_EDITION" ;;
+            *)
+              EDS=""
+              [ "$HHMM" -ge 0915 ] && EDS="am"
+              [ "$DOW" -le 5 ] && [ "$HHMM" -ge 1415 ] && EDS="${EDS:+$EDS }pm"
+              ;;
+          esac
+          if [ -z "$EDS" ]; then
+            echo "nothing is due to have shipped yet (Chicago $HHMM)"
+            exit 0
+          fi
+          note "Chicago $TODAY $(now): checking: $EDS"
+
+          # Exact-name lookup, retried, errors kept. Prints the count; fails if
+          # the API never answered. This used to be `2>/dev/null || echo 0`,
+          # which turned an API hiccup into a forced, duplicate edition.
+          lookup() {
+            local n try
+            for try in 1 2 3; do
+              if n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
+                       --jq '[.artifacts[] | select(.expired==false)] | length'); then
+                echo "$n"; return 0
+              fi
+              echo "artifact lookup for $1 failed (try $try/3)" >&2
+              [ "$try" -lt 3 ] && sleep $((try * 15))
+            done
+            return 1
+          }
+
+          # Today's dispatched compass runs by anyone but GITHUB_TOKEN (the
+          # watchdog's own recoveries are github-actions[bot]). The run name
+          # carries edition and source ("COMPASS am · worker"), so a manual
+          # dispatch by the same account is not mistaken for the Worker.
+          START=$(date -u -d "TZ=\"America/Chicago\" $TODAY 00:00" +%Y-%m-%dT%H:%M:%SZ)
+          if RUNS=$(gh api --paginate \
+                      "repos/${GITHUB_REPOSITORY}/actions/workflows/compass.yml/runs?event=workflow_dispatch&created=%3E%3D${START}&per_page=100" \
+                      --jq '.workflow_runs[] | select(.triggering_actor.login != "github-actions[bot]") | .display_title'); then
+            RUNS_OK=true
           else
-            echo "::warning::compass-$ED-$TODAY is MISSING — forcing a build"
-            { echo "miss=true"; echo "edition=$ED"; echo "today=$TODAY"; } >> "$GITHUB_OUTPUT"
+            RUNS_OK=false
           fi
 
-      - name: Force the missed edition
-        if: steps.check.outputs.miss == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run compass.yml -R "${GITHUB_REPOSITORY}" \
-            -f edition="${{ steps.check.outputs.edition }}" -f send=true -f force=true
+          ALERT=false
+          declare -A STATE WORKER
+          PENDING=""
+          for ED in $EDS; do
+            NAME="compass-$ED-$TODAY"
+            if [ "$RUNS_OK" != true ]; then
+              WORKER[$ED]="unknown (could not list today's runs)"
+            elif printf '%s\n' "$RUNS" | grep -qx "COMPASS $ED · worker"; then
+              WORKER[$ED]="yes"
+            else
+              WORKER[$ED]="NO — the Worker did not dispatch this edition today"
+              ALERT=true
+            fi
 
+            if ! COUNT=$(lookup "$NAME"); then
+              STATE[$ED]="COULD NOT VERIFY: the artifacts API kept failing, so no recovery was dispatched"
+              ALERT=true
+            elif [ "$COUNT" -gt 0 ]; then
+              STATE[$ED]="shipped"
+            else
+              echo "::warning::$NAME is MISSING — dispatching a recovery run"
+              if gh workflow run compass.yml -R "$GITHUB_REPOSITORY" \
+                   -f edition="$ED" -f send=true -f force=false -f source=watchdog; then
+                STATE[$ED]="missing at $(now) CT; recovery run dispatched"
+                PENDING="$PENDING $ED"
+              else
+                STATE[$ED]="missing at $(now) CT, and the recovery dispatch FAILED"
+              fi
+              ALERT=true
+            fi
+            note "  $ED: ${STATE[$ED]} (Worker dispatch today: ${WORKER[$ED]})"
+          done
+
+          # Wait for the recovery to land, so the alert can say whether it did.
+          # Dispatched together and grouped per edition in compass.yml, the AM
+          # and PM recoveries cannot cancel each other.
+          DEADLINE=$(( $(date +%s) + 30 * 60 ))
+          while [ -n "${PENDING// /}" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            sleep 60
+            for ED in $PENDING; do
+              if COUNT=$(lookup "compass-$ED-$TODAY") && [ "$COUNT" -gt 0 ]; then
+                STATE[$ED]="${STATE[$ED]}; shipped at $(now) CT"
+                note "  $ED: recovery shipped at $(now) CT"
+                PENDING=$(echo " $PENDING " | sed "s/ $ED / /")
+              fi
+            done
+          done
+          for ED in $PENDING; do
+            STATE[$ED]="${STATE[$ED]}; NOT shipped after 30 minutes (still curating, queued, or failed: see the runs)"
+          done
+
+          {
+            echo
+            echo "Summary for $TODAY:"
+            for ED in $EDS; do
+              echo "  $ED: ${STATE[$ED]}"
+              echo "      Worker dispatch today: ${WORKER[$ED]}"
+            done
+          } | tee -a "$REPORT"
+
+          SUBJECT=""
+          for ED in $EDS; do
+            case "${STATE[$ED]}" in
+              shipped) ;;
+              *"shipped at"*) SUBJECT="$SUBJECT $ED recovered late;" ;;
+              COULD*) SUBJECT="$SUBJECT $ED could not be verified;" ;;
+              *) SUBJECT="$SUBJECT $ED MISSING;" ;;
+            esac
+          done
+          if [ -z "$SUBJECT" ] && [ "$ALERT" = true ]; then
+            SUBJECT=" Worker did not dispatch $EDS;"
+          fi
+          SUBJECT="COMPASS watchdog:${SUBJECT%;}"
+          { echo "alert=$ALERT"; echo "subject=$SUBJECT"; } >> "$GITHUB_OUTPUT"
+
+      # Runs even when the check step failed or timed out: a watchdog that dies
+      # quietly is the failure it exists to prevent.
       - name: Say so
-        if: steps.check.outputs.miss == 'true'
+        if: always() && steps.check.outputs.paused != 'true' && (steps.check.outputs.alert == 'true' || steps.check.outcome != 'success')
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT: ${{ secrets.RECIPIENT }}
-          ED: ${{ steps.check.outputs.edition }}
-          DAY: ${{ steps.check.outputs.today }}
-          REPO: ${{ github.repository }}
+          SUBJECT: ${{ steps.check.outputs.subject }}
+          OUTCOME: ${{ steps.check.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUNS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/compass.yml
         run: |
-          BODY=$(cat <<EOF
-          The $ED edition for $DAY had not shipped by the time its window closed,
-          so the watchdog forced a build. It should arrive within about ten minutes.
+          BODY=$(cat watchdog_report.txt 2>/dev/null || echo "(no report was written)")
+          if [ "$OUTCOME" != "success" ]; then
+            SUBJECT="COMPASS watchdog could not finish its check ($OUTCOME)"
+            BODY=$(printf '%s\n\nThe check step ended "%s"; the report above may be incomplete.' "$BODY" "$OUTCOME")
+          fi
+          python3 scripts/alert.py "$SUBJECT" \
+            "$(printf '%s\n\nWatchdog run: %s\nCOMPASS runs: %s\n' "$BODY" "$RUN_URL" "$RUNS_URL")"
 
-          Run log: https://github.com/$REPO/actions
-          EOF
-          )
-          python scripts/alert.py "COMPASS $ED was late - shipping now" "$BODY"
-
-      # GitHub disables scheduled workflows after 60 days without repository
-      # activity. The last commit before this was 2026-08-04, which would have
-      # silently switched the crons off around 2026-10-03.
+      # GitHub disables scheduled workflows in a public repo after 60 days
+      # without a push. The section-coverage commit after every edition is the
+      # primary keepalive; this only covers a long stretch without one (a pause,
+      # a broken pipeline). It tests the age of HEAD's commit, which is exactly
+      # "time since the last push" even in this depth-1 checkout. The old test
+      # read the last .keepalive commit, which a shallow clone cannot see, so it
+      # actually compared HEAD's month and fired only by accident.
       - name: Keepalive
-        if: steps.check.outputs.miss == 'false'
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
-          TODAY=$(date -u +%F)
-          echo "$TODAY" > .keepalive
-          if [ -n "$(git status --porcelain .keepalive)" ]; then
-            LAST=$(git log -1 --format=%cd --date=format:%Y-%m -- .keepalive || echo "")
-            if [ "$LAST" != "$(date -u +%Y-%m)" ]; then
-              git config user.name  "compass-watchdog"
-              git config user.email "actions@github.com"
-              git add .keepalive
-              git commit -m "Keepalive: scheduled workflows stay enabled"
-              git push
-            fi
+          AGE=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+          if [ "$AGE" -lt $((30 * 86400)) ]; then
+            echo "last commit $((AGE / 86400)) days ago — no keepalive needed"
+            exit 0
           fi
+          date -u +%F > .keepalive
+          git config user.name  "compass-watchdog"
+          git config user.email "actions@github.com"
+          git add .keepalive
+          git commit -m "Keepalive: scheduled workflows stay enabled"
+          git push
