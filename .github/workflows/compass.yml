@@ -210,7 +210,7 @@ jobs:
       AT: ${{ needs.decide.outputs.at }}
       SOURCE: ${{ needs.decide.outputs.source }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # This job may have waited in its concurrency group behind another run of
       # the same edition (the Worker's 08:45 dispatch always queues behind its
@@ -249,7 +249,7 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: steps.gate.outputs.go == 'true'
         with:
           python-version: '3.12'
@@ -536,7 +536,7 @@ jobs:
         if: always() && steps.gate.outputs.go == 'true' && env.SEND != '' && hashFiles('sent.ok') != ''
         # The second attempt below decides the job's fate, not this one.
         continue-on-error: true
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.decide.outputs.artifact }}
           path: |
@@ -554,7 +554,7 @@ jobs:
       - name: Mark shipped (second attempt)
         id: mark2
         if: always() && steps.mark.outcome == 'failure'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.decide.outputs.artifact }}
           path: |
@@ -602,7 +602,7 @@ jobs:
       # what makes the next one diagnosable.
       - name: Keep rejected curation output
         if: always() && steps.gate.outputs.go == 'true' && hashFiles('rejected/**') != ''
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rejected-${{ github.run_id }}
           path: rejected/
@@ -613,7 +613,7 @@ jobs:
       # this a dry run would produce nothing to look at.
       - name: Keep dry-run preview
         if: success() && steps.gate.outputs.go == 'true' && env.SEND == ''
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: preview-${{ needs.decide.outputs.edition }}-${{ github.run_id }}
           path: |
@@ -679,7 +679,7 @@ jobs:
 
       - name: Keep failure output for debugging
         if: failure() && steps.gate.outputs.go == 'true'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: failed-${{ github.run_id }}
           path: |
