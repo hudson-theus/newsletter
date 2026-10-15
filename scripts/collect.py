@@ -267,7 +267,10 @@ def _download(section: str, tag: str, url: str, headers: dict) -> ET.Element | N
 
 
 def _report(section: str, tag: str, url: str, n: int, skipped: int) -> None:
-    note = f" ({skipped} skipped: no usable date)" if skipped else ""
+    # Undated, unreadable, or outside [now-30d, now+1d] (see _when). A section
+    # sitemap lists years of articles, so a large count there is normal; a feed
+    # whose every item lands here has gone stale, like VentureBeat's mirror.
+    note = f" ({skipped} skipped: no date within 30 days)" if skipped else ""
     _log(f"  {section}/{tag}: {n} items{note}")
     if not n:
         # A feed that parses to nothing is a parser or feed problem, not a quiet
@@ -549,10 +552,11 @@ def _when(raw: str, now: dt.datetime) -> dt.datetime | None:
 
 # Translated copies. PR Newswire's M&A list carries German and French versions of
 # English releases under /de/ and /fr/ paths (runner probe, 2026-10-14). The reader
-# reads English, and the English original is in the same feed.
+# reads English, and the English original is in the same feed. Kept to the
+# languages wires actually translate into, so fewer ordinary two-letter path
+# segments (a state code on a local-news site) can be mistaken for one.
 _FOREIGN_PATH = re.compile(
-    r"^/(?:de|fr|es|it|pt|ja|zh|ko|nl|sv|da|no|fi|pl|ru|tr|ar|he)(?:[-_][a-z]{2,4})?(?:/|$)",
-    re.I)
+    r"^/(?:de|fr|es|it|pt|ja|zh|ko|nl)(?:[-_][a-z]{2,4})?(?:/|$)", re.I)
 
 
 def _foreign(url: str) -> bool:
@@ -909,9 +913,12 @@ def load_this_morning(prior_dir: str, today: str) -> list[dict]:
     try:
         issue = json.load(open(path))
         out = []
-        if isinstance(issue.get("front_matter"), str) and issue["front_matter"].strip():
+        # A fallback's front matter is boilerplate about the failed curation, not
+        # news the reader got; its items did reach the reader, so they stay.
+        fm = issue.get("front_matter")
+        if isinstance(fm, str) and fm.strip() and not issue.get("_fallback"):
             out.append({"section": "FRONT MATTER", "title": html.unescape(
-                TAGSTRIP.sub("", issue["front_matter"])).strip(), "url": None})
+                TAGSTRIP.sub("", fm)).strip(), "url": None})
         for s in issue.get("sections") or []:
             if not isinstance(s, dict):
                 continue
