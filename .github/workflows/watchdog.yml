@@ -8,27 +8,22 @@ run-name: COMPASS watchdog · ${{ inputs.edition || 'due' }}
 # This asks, for each edition that should have shipped by now: does today's
 # shipped-marker exist? If not, it dispatches a recovery run and then WAITS for
 # the marker (up to 30 minutes), so the alert reports what actually happened
-# rather than promising an arrival. It also checks that the Cloudflare Worker,
-# the only on-time trigger, dispatched that edition: a Worker that stops (an
-# expired token, a bad deploy; it missed both 13:15Z and 18:15Z on 2026-10-13)
-# otherwise degrades every edition to the late GitHub crons with no signal.
+# rather than promising an arrival. The report also says whether the Cloudflare
+# Worker dispatched that edition, but that alone never sends an alert: an edition
+# that shipped is not news, whoever started it.
 #
-# Who runs it. The Worker dispatches it at 09:20 and 14:20 CT with the edition
-# that was just due. The GitHub crons below are the backstop for a dead Worker,
-# and are late: by October 2026 they started 2-5 hours after their time, so the
-# "12:00 CT" fire landed between 14:00 and 18:30 CT. A late fire checks every
-# edition due by then, not one picked from the clock: the old rule made each
-# post-16:30 arrival check only the PM, and on 5 of 8 weekdays nothing ever
-# checked the morning edition.
+# Who runs it. Only the Worker, at 09:20 and 14:20 CT, with the edition that was
+# just due. There is no GitHub cron: by October 2026 GitHub's started 2-5 hours
+# late, and on 2026-10-15 a late one emailed "Worker did not dispatch" about a
+# morning edition the Worker had in fact dispatched (its run predated the
+# "COMPASS am · worker" run name). Run by hand with edition=due to check every
+# edition due so far today.
 #
 # The recovery run is dispatched with force=false. The marker was missing when
 # this looked, so force adds nothing except skipping compass.yml's own re-check
 # when the run actually starts, and that re-check is what keeps a run that was
 # still in flight here (or a lookup that failed) from becoming a second email.
 on:
-  schedule:
-    - cron: '0 17,18 * * *'     # 12:00 CT — backstop only; arrives hours late
-    - cron: '0 22,23 * * 1-5'   # 17:00 CT — backstop only
   workflow_dispatch:
     inputs:
       edition:
@@ -139,7 +134,6 @@ jobs:
               WORKER[$ED]="yes"
             else
               WORKER[$ED]="NO — the Worker did not dispatch this edition today"
-              ALERT=true
             fi
 
             if ! COUNT=$(lookup "$NAME"); then
@@ -197,9 +191,6 @@ jobs:
               *) SUBJECT="$SUBJECT $ED MISSING;" ;;
             esac
           done
-          if [ -z "$SUBJECT" ] && [ "$ALERT" = true ]; then
-            SUBJECT=" Worker did not dispatch $EDS;"
-          fi
           SUBJECT="COMPASS watchdog:${SUBJECT%;}"
           { echo "alert=$ALERT"; echo "subject=$SUBJECT"; } >> "$GITHUB_OUTPUT"
 

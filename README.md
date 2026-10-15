@@ -30,7 +30,7 @@ last resort.
 | 13:15, 13:45 Mon-Fri | Worker | dispatches `compass.yml` with `edition=pm`, `source=worker` |
 | 14:00 | the 13:15 run | the afternoon edition is sent |
 | 14:20 Mon-Fri | Worker | dispatches `watchdog.yml` with `edition=pm` |
-| various | GitHub cron | backstops in both workflows, for a dead Worker; they usually arrive hours late |
+| various | GitHub cron | `compass.yml` backstops, for a dead Worker; they usually arrive hours late |
 
 - **Daylight saving.** Cloudflare crons are UTC-only, so every slot fires at both
   candidate UTC hours and the Worker checks the real Chicago clock; the twin that
@@ -45,9 +45,11 @@ last resort.
 - **The watchdog** (`watchdog.yml`) checks that today's marker exists. If it is
   missing, it dispatches a recovery run of `compass.yml` with `force=false` and
   `source=watchdog` (so the recovery still stands down if the edition shipped in
-  the meantime) and alerts with what happened. It also reports when the Worker did
-  not dispatch an edition at all. Run by hand with `edition=due`, it checks every
-  edition due so far today.
+  the meantime) and alerts with what happened. Its report also says whether the
+  Worker dispatched the edition, but it never alerts when every edition shipped.
+  Only the Worker runs it (there is no GitHub cron for it), so a dead Worker
+  shows up as late editions from the `compass.yml` backstop, not as an alert.
+  Run by hand with `edition=due`, it checks every edition due so far today.
 
 `compass.yml` can also be run by hand from the Actions tab (`workflow_dispatch`):
 
@@ -148,7 +150,7 @@ commit.
 
 | Secret | Notes |
 |---|---|
-| `GITHUB_TOKEN` | A GitHub personal access token that can dispatch workflows on this repository (fine-grained: Actions read and write). It has the expiry chosen when it was created; when it lapses, the Worker's dispatches fail with 401, every edition falls to the late GitHub crons, and the watchdog reports "the Worker did not dispatch". |
+| `GITHUB_TOKEN` | A GitHub personal access token that can dispatch workflows on this repository (fine-grained: Actions read and write). It has the expiry chosen when it was created; when it lapses, the Worker's dispatches fail with 401, every edition falls to the late GitHub crons, and the watchdog stops running too. Late editions are the sign. |
 | `FRED_API_KEY` | A free key from fred.stlouisfed.org. The Worker serves `/fred?series=ID` to `market.py` for exactly five series, so the key never enters the repo or a workflow log. |
 
 Rotation dates are not recorded anywhere automatically. When you create or rotate
@@ -166,8 +168,7 @@ problem cannot silence both the edition and the alert about it:
    absent). Watch the repository or subscribe to that issue to be notified.
 
 Alerts are raised for: a missing or late edition, a recovery that did not ship, a
-marker that could not be checked, the Worker not dispatching an edition (all from
-the watchdog); an edition that shipped as the unedited fallback; a run that
+marker that could not be checked (all from the watchdog); an edition that shipped as the unedited fallback; a run that
 failed; curation touching files other than `issue.json`; a coverage commit that
 could not be pushed.
 
