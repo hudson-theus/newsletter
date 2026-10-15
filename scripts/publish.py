@@ -599,7 +599,9 @@ def main() -> None:
 
     issue, defects = check_issue.normalize(json.load(open(args.issue)))
     for d in defects:
-        print(f"::warning::issue.json: {d} — left out of the render")
+        # Only reachable when the check was bypassed (a manual run); the check
+        # rejects these. Dropped or nulled rather than crashing the send.
+        print(f"::warning::issue.json: {d} — dropped or nulled for the render")
     if issue is None:
         print("::error::issue.json has no renderable sections")
         raise SystemExit(1)
