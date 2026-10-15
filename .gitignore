@@ -1,11 +1,13 @@
 # Local secrets. GitHub Actions secrets live in repo Settings, not in files —
-# this is only for running scripts/generate_issue.py on your own machine.
+# this is only for running the scripts on your own machine (publish.py --send
+# reads GMAIL_ADDRESS, GMAIL_APP_PASSWORD and RECIPIENT from the environment).
 .env
 *.env
 
 # Generated issues. The Action uploads these as artifacts; never commit them.
 issue_*.html
 issue_*.gif
+issue_*.eml
 
 # Local scratch
 build_issue.py
@@ -25,7 +27,10 @@ venv/
 candidates.json
 issue.json
 market.json
+market_series.json
+sent.ok
+rejected/
+prior/
 
 # wrangler writes account id and cached auth state here
 .wrangler/
-prior/
