@@ -801,7 +801,9 @@ def load_shipped(prior_dir: str, today: str) -> tuple[set, set, list]:
 def drop_shipped(items: list, urls: set, titles: set) -> tuple[list, list]:
     keep, gone = [], []
     for i in items:
-        if url_key(i["url"]) in urls or (title_key(i["title"]) or "\0") in titles:
+        links = [i["url"]] + i.get("_twins", [])
+        if any(url_key(u) in urls for u in links) \
+                or (title_key(i["title"]) or "\0") in titles:
             gone.append(i)
         else:
             keep.append(i)
@@ -812,15 +814,21 @@ def dedup(items: list) -> tuple[list, int]:
     """One copy per story within this run. Only the exact URL used to be checked,
     so a tracking-parameter variant or a wire story carried by PBS, WFAA and the
     AP sitemap took a slot each and invited the same story twice in one issue. The
-    first copy wins, in FEEDS order, which is why TechCrunch's main feed is last."""
-    urls, titles, keep = set(), set(), []
+    first copy wins, in FEEDS order, which is why TechCrunch's main feed is last.
+    It keeps the dropped copies' links in _twins (never written out), so a story
+    that shipped yesterday under the second copy's link is still recognised."""
+    urls: dict[str, dict] = {}
+    titles: dict[str, dict] = {}
+    keep = []
     for i in items:
         u, t = url_key(i["url"]), title_key(i["title"])
-        if u in urls or (t and t in titles):
+        first = urls.get(u) or (titles.get(t) if t else None)
+        if first is not None:
+            first.setdefault("_twins", []).append(i["url"])
             continue
-        urls.add(u)
+        urls[u] = i
         if t:
-            titles.add(t)
+            titles[t] = i
         keep.append(i)
     return keep, len(items) - len(keep)
 
@@ -947,8 +955,9 @@ def load_this_morning(prior_dir: str, today: str) -> list[dict]:
 HEAD = ("edition", "generated_at", "window_start", "by_section", "attention",
         "recently_shipped", "this_morning")
 
-# The fields an item carries in the file. _feed and categories are working state
-# for the caps and the satire check and must not reach the curator.
+# The fields an item carries in the file. _feed, _twins and categories are working
+# state for the caps, the shipped filter and the satire check and must not reach
+# the curator.
 ITEM_FIELDS = ("title", "url", "src", "section", "published",
                "satire", "satire_reason", "dek")
 
@@ -1121,6 +1130,8 @@ def main() -> None:
         return min(cutoff, now - SLOW[section]) if section in SLOW else cutoff
 
     kept = [i for b in batches for i in b if _published(i) >= floor(i["section"])]
+    # Dedup before the shipped filter: the surviving copy carries its twins' links
+    # (_twins), so when any copy of a story shipped yesterday the story goes.
     kept, twins = dedup(kept)
     print(f"\n{twins} within-run duplicates dropped (same link or same headline)")
 
