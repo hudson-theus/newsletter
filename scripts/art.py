@@ -41,7 +41,9 @@ SCALE = 2                       # render at 2x, present at 1x, for retina mail
 COVER = (620, 300)
 GREET_W = 420                   # the greeting's display width in compass.greet()
 BUDGET = 3_000_000              # total bytes of imagery per issue; over it, skip
-EXPECT = 1_000_000              # a normal issue is ~0.9 MB (2026-10-14); over it, warn
+# A normal issue is ~0.9 MB (2026-10-14) and a volatile day's denser hairline
+# field takes the cover to ~1.1 MB; past this, warn (nothing is dropped).
+EXPECT = 1_300_000
 
 TH = {
     "am": dict(accent=(238, 255, 140), label="MORNING EDITION", greet="Good morning"),
@@ -532,6 +534,6 @@ def build(edition: str, market: dict, date: str, stamp: str,
     if total > EXPECT:
         # Not a limit — nothing is dropped. A regression in GIF weight costs the
         # reader mobile data and shows up nowhere else.
-        print(f"::warning::art: {total/1024:.0f} kB of imagery, over the "
-              f"~{EXPECT//1000} kB an issue normally weighs")
+        print(f"::warning::art: {total/1024:.0f} kB of imagery, more than an issue "
+              f"should weigh ({EXPECT//1000} kB)")
     return out

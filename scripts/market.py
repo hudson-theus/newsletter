@@ -22,7 +22,7 @@ Everything here is free and needs no secret in this repo:
     FRED API key as a Worker secret, with fredgraph.csv as the fallback. Through
     2026-10-14 this read fredgraph.csv with a browser User-Agent and every logged
     run timed out: FRED answers Python's default User-Agent at once and stalls
-    ~40s on a browser or custom one (runner probe, 2026-10-14). FRED dates an
+    ~40s on a browser or custom one (runner probe, 2026-10-15). FRED dates an
     observation by the first day of its period, so a FRED as_of of 2026-09-01 is
     September's figure and 2026-04-01 on the delinquency rate is the second
     quarter's.
