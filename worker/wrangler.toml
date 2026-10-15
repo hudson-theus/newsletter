@@ -18,10 +18,19 @@ compatibility_date = "2026-08-01"
 # afternoon edition went undispatched and fell to GitHub's late cron backstop.
 # On 2026-10-09 that started at 13:45 CT, fifteen minutes before the send, and
 # the edition shipped unedited.
+#
+# The last two dispatch watchdog.yml instead of compass.yml, twenty minutes after
+# each send. GitHub's own watchdog cron ran 2-5 h late and on most weekdays never
+# checked the morning edition at all, so a Worker-missed AM had no rescue. The
+# Worker matches these strings exactly (event.cron), so change both together.
+#
+# 14:20/15:20 UTC = 09:20 CDT/CST   |   19:20/20:20 UTC = 14:20 CDT/CST
 [triggers]
 crons = [
-  "15,45 13,14 * * *",
-  "15,45 18,19 * * MON-FRI",
+  "15,45 13,14 * * *",        # compass AM
+  "15,45 18,19 * * MON-FRI",  # compass PM
+  "20 14,15 * * *",           # watchdog AM
+  "20 19,20 * * MON-FRI",     # watchdog PM
 ]
 
 # Without this there are no Worker logs at all, and a missed fire cannot be told
