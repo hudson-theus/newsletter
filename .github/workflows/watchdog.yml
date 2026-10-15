@@ -35,7 +35,6 @@ on:
 permissions:
   contents: write   # the keepalive commit
   actions: write    # dispatch a recovery run of compass.yml
-  issues: write     # alert.py's second channel
 
 concurrency:
   group: compass-watchdog
@@ -201,9 +200,6 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          RECIPIENT: ${{ secrets.RECIPIENT }}
           SUBJECT: ${{ steps.check.outputs.subject }}
           OUTCOME: ${{ steps.check.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
