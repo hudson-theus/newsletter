@@ -171,15 +171,16 @@ the watchdog); an edition that shipped as the unedited fallback; a run that
 failed; curation touching files other than `issue.json`; a coverage commit that
 could not be pushed.
 
-GitHub's own notifications are a third channel: with "Actions → notify on failed
-workflows" on in your GitHub notification settings, a failed run emails you,
+GitHub's own notifications are a third channel: with Actions notifications on in
+your GitHub settings (Notifications → Actions, failed workflows only), a failed
+run emails you,
 including runs the Worker dispatched (they run as the token's owner). Worker
 errors themselves are in Cloudflare → Workers → `compass-trigger` → Logs.
 
 ### The Gmail Apps Script
 
-Not in this repo: an Apps Script in the recipient's Google account routes mail
-whose subject starts with `[SPREAD]`. Editions (`[SPREAD] COMPASS AM / Oct 15`)
+Not in this repo: an Apps Script in the owner's Google account routes mail whose
+subject starts with `[SPREAD]`. Editions (`[SPREAD] COMPASS AM / Oct 15`)
 and email alerts both carry that prefix. If a marker exists but the email is not
 where you expect it, the pipeline sent it (the SMTP server accepted it): look at
 the script and Gmail's filters, not at the workflow. Every edition has a fixed
