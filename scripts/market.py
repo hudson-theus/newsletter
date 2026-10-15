@@ -364,7 +364,13 @@ def _obs(pairs) -> list[tuple[str, float]]:
 
 
 def _fred_worker(series: str) -> list[tuple[str, float]]:
-    body = json.loads(_get_plain(f"{FRED_URL}?series={series}", 30))
+    # Not _get_plain: Cloudflare's bot filter turns away urllib's default
+    # "Python-urllib" agent on workers.dev (the 2026-10-15 dry run fell through to
+    # fredgraph.csv on every series), while a named agent passes.
+    req = urllib.request.Request(f"{FRED_URL}?series={series}",
+                                 headers={"User-Agent": "compass-newsletter/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = json.loads(r.read())
     if body.get("series") != series:
         raise ValueError(f"Worker answered for {body.get('series')!r}")
     return _obs((o.get("date"), o.get("value")) for o in body.get("observations") or [])
