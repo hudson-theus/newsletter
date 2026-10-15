@@ -11,6 +11,8 @@ falls back to the static treatment it had before, so the issue ships whole even
 when the whole art step failed.
 """
 
+import html
+
 MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
 SANS = "-apple-system,'Segoe UI',Helvetica,Arial,sans-serif"
 
@@ -59,7 +61,7 @@ def greet(text, card=None):
     """The kinetic greeting card. The sentence below it stays live text."""
     if card:
         return ('<tr><td style="padding:18px 22px 0 22px;font-size:0;line-height:0;">'
-                f'<img src="cid:greet" width="420" alt="{text}" '
+                f'<img src="cid:greet" width="420" alt="{html.escape(text)}" '
                 'style="display:block;width:100%;max-width:420px;height:auto;border:0;">'
                 '</td></tr>')
     return (f'<tr><td style="padding:18px 22px 0 22px;"><div style="font-family:{SANS};'
@@ -88,12 +90,19 @@ def item(ed, text, src=None, link=None, rule=True):
     # Source tag carries the edition accent. It is a dark-text-on-accent chip rather
     # than accent-colored text: #eeff8c as text on white is 1.09:1 contrast, i.e.
     # invisible. Same treatment as the edition label in head().
+    #
+    # src and link are data, not markup: escaped here so a quote in a URL or a <
+    # in a source tag cannot end the attribute or open a tag that swallows the
+    # chip. src is unescaped first because the curator writes "S&amp;P" by the
+    # prompt's rule while candidate tags are plain text; both end up as one &amp;.
     a = TH[ed]["accent"]
     tag = ""
     if src:
+        chip = html.escape(html.unescape(src), quote=False)
         s = (f'<span class="chip" style="font-family:{MONO};font-size:10px;color:#111111;'
-             f'background:{a};padding:1px 5px;white-space:nowrap;">{src}</span>')
-        tag = f' <a href="{link}" style="text-decoration:none;">{s}</a>' if link else f' {s}'
+             f'background:{a};padding:1px 5px;white-space:nowrap;">{chip}</span>')
+        tag = (f' <a href="{html.escape(link, quote=True)}" style="text-decoration:none;">'
+               f'{s}</a>' if link else f' {s}')
     b = "border-bottom:1px solid #eeeeea;" if rule else ""
     return (f'<tr><td style="padding:0 22px 9px 22px;"><div style="font-family:{SANS};font-size:14px;'
             f'line-height:1.6;color:#2a2a2a;padding-bottom:9px;{b}">{text}{tag}</div></td></tr>')
@@ -142,12 +151,29 @@ a:hover .chip{filter:brightness(1.06);}
 """
 
 
-def wrap(rows):
+# Inbox clients build the preview snippet from the first text in the body. The
+# cover and greeting are images, so without this the snippet was the dateline
+# rail: "WEDNESDAY, OCTOBER 14, 2026 / AFTERNOON EDITION / 1:00 PM CT / NO 132".
+# The padding fills the rest of the snippet so the rail cannot leak in after it.
+PREHEADER_PAD = "&zwnj;&nbsp;" * 90
+
+
+def preheader(text):
+    """Hidden first element of the body; text is already HTML-safe."""
+    if not text:
+        return ""
+    return ('<div style="display:none;font-size:1px;line-height:1px;max-height:0;'
+            'max-width:0;opacity:0;overflow:hidden;mso-hide:all;">'
+            f'{text}{PREHEADER_PAD}</div>')
+
+
+def wrap(rows, preview=None):
     return ('<!DOCTYPE html><html><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta name="color-scheme" content="light dark">'
             f'<style>{STYLE}</style></head>'
             '<body style="margin:0;padding:0;background:#ffffff;">'
+            + preheader(preview) +
             '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
             'style="background:#ffffff;padding:14px 6px;"><tr><td align="center">'
             '<table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" '
