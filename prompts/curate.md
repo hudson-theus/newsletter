@@ -8,15 +8,29 @@ published in this edition's window, from free sources only. **It is your only so
 of items and links.** Do not search the web. Do not fetch pages. Do not add an item
 that is not in the candidate list.
 
-`market.json` holds deterministically collected market numbers. It is your only
-source of figures for the numbers lines. Never estimate a number that is missing
-from it, and never carry a stale one forward — omit it silently instead.
+`candidates.json` is long, and the lists that steer the issue are at the **top**:
+`edition`, `window_start`, `by_section`, then `attention` (when present),
+`recently_shipped`, and in the afternoon `this_morning`. Every candidate follows
+under `items`, one per line. Read the whole file. If a read stops before the end,
+continue from where it stopped until you have seen the last item.
 
-Your job is editorial, not research: select, rank, group, and write.
+`market.json` holds deterministically collected market numbers: a short file of
+scalars, nothing else. It is your only source of figures for the numbers lines.
+Never estimate a number that is missing from it, and never carry a stale one
+forward — omit it silently instead. See **Numbers** below for every key.
+
+Your job is editorial, not research: select, rank, group, and write. You can read
+files and write `issue.json`; that is all this run permits. Where the spec talks
+about fetching, searching, verifying links, rendering or sending, the pipeline
+does it before or after you: `collect.py` gathers and date-checks the candidates,
+`publish.py` checks every link's provenance and resolution, renders the email and
+sends it. Any other tool call is refused and only costs you a turn.
 
 ## Sections
 
-Eleven sections, this order, every issue:
+Eleven sections, this order, every issue. The item counts are for a full
+edition: the morning, and an afternoon with no `this_morning` to work from. The
+afternoon edition is shorter on purpose; see **Afternoon edition**.
 
 | # | Section | Items | Notes |
 |---|---|---|---|
@@ -34,6 +48,18 @@ Eleven sections, this order, every issue:
 
 Omit any section or subsection with no real items rather than padding it. Omitting
 is correct behaviour and is reported, not penalised.
+
+Section titles and block labels must be **exactly** the ones in the table above
+and in the **Output** shape below, character for character, including `&amp;`:
+`FRONT MATTER`, `THE ECONOMY`, `CRE SNAPSHOT`, `CRE DESK` (`RETAIL`,
+`PROPTECH &amp; CRE-TECH`), `DEAL FLOW` (`VC`, `IPOS &amp; LISTINGS`,
+`M&amp;A / STRATEGIC`, `DEBT`, `FUNDS &amp; SECONDARIES`, `DISTRESSED`),
+`AI &amp; ENTERPRISE`, `UNITED STATES`, `THE WORLD`, `DALLAS / TEXAS` (`NEWS`,
+`FOOD &amp; DRINK`, `GOING OUT`), `SPORTS` (`COWBOYS &amp; NFL`, `MAVERICKS`,
+`VIRGINIA`), `WORTH READING`. The coverage tracker behind `attention` matches
+them exactly: a block shipped as "IPOs and Listings" or "DALLAS/TEXAS" is counted
+as missing, and the next issues are told to fill a block that already ran. Never
+invent a title or label of your own; a block with no label uses `null`.
 
 ## CRE: short, and only what matters
 
@@ -106,11 +132,18 @@ the candidate list belongs there, omit it again and the count keeps climbing —
 is the mechanism working, not failing. Lower the bar; do not abandon it. One real
 item is the target, not a full block.
 
+In the afternoon, `attention` still applies, but only through candidates the
+morning did not run. If `this_morning` already carries an item in that block, the
+block is not dark today: leave it out unless something new clears the bar.
+
 Candidate items carry a `section` hint (`economy`, `us`, `world`, `dallas`,
-`sports`, `uva`, `cre`, `retail`, `vc`, `ipo`, `deals`, `read`). Treat it as routing
-help, not as an assignment — a Dallas story big enough to be national news goes in
-UNITED STATES, and a `uva` item that is not sports may belong in SPORTS anyway if it
-is large UVA news, per the spec.
+`food`, `goingout`, `sports`, `uva`, `cre`, `retail`, `vc`, `ipo`, `deals`, `ai`,
+`read`). `food` and `goingout` feed DALLAS / TEXAS's `FOOD &amp; DRINK` and
+`GOING OUT` blocks; `ai` is the AI and enterprise-tech feeds behind
+AI &amp; ENTERPRISE. Treat the hint as routing help, not as an assignment — a
+Dallas story big enough to be national news goes in UNITED STATES, an `ai` item
+that is really a funding round may belong in DEAL FLOW, and a `uva` item that is
+not sports may belong in SPORTS anyway if it is large UVA news, per the spec.
 
 ## Already shipped
 
@@ -121,8 +154,45 @@ from the Dallas Morning News the next. `candidates.json` carries
 `recently_shipped`: the headlines of every item from the previous two days. Do not
 run a candidate that tells one of those stories again. The single exception is a
 material new development, and then write it as the update ("…now confirmed for
-January"), not as the original news. Repeating an item from this morning's
-edition in the afternoon is fine.
+January"), not as the original news. This morning's items are a separate case,
+covered next.
+
+## Afternoon edition
+
+The afternoon edition (`"edition": "pm"`) answers one question: **what changed
+since this morning?** The reader read the 9:00 issue five hours ago. He wants
+what moved since then, not the morning again.
+
+`candidates.json` for a PM run carries `this_morning`: every item the morning
+edition actually shipped (its FRONT MATTER sentence may be listed too), as
+`{"section", "title", "url"}`. `section` is the issue section it ran in, `title`
+is the original headline (or the morning's own text when no headline was on
+hand), and `url` is its link, or null. This morning's items are deliberately
+**still in the candidate pool**, because a follow-up needs the original story
+within reach. So match each candidate you consider against `this_morning`, by
+`url` first and then by story: a different outlet's version of the same news is
+the same item.
+
+- **Lead with what moved since 9:00.** FRONT MATTER and THE ECONOMY open on the
+  afternoon's developments: a print or a Fed remark since the morning, a market
+  move, a deal announced at midday, a ruling, a vote.
+- **Do not re-run a morning item** unless there is a material new development,
+  and then write it as the update ("…now priced at $21, above its range"), not
+  as the original news. The same headline from a second outlet is not a
+  development.
+- **The slower sections appear only with something new since the morning:**
+  WORTH READING, FOOD &amp; DRINK, GOING OUT, CRE SNAPSHOT, CRE DESK, and the
+  features and previews in SPORTS. Their candidates look back several days, so
+  most of what is in the pool for them either ran this morning or was passed over
+  then. A game result, an injury or a signing since the morning still runs.
+- **Shorter is correct.** Roughly 25–40 items, with several sections omitted, is
+  a good afternoon. The counts in the table are not minimums here: run what is
+  new and real, and stop. THE ECONOMY still carries its numbers line; see
+  **Numbers** for what can have moved by the afternoon.
+
+If `this_morning` is missing or empty, the morning edition failed or never
+shipped, and the reader has had nothing today. Write a normal full edition by
+the table, as you would in the morning.
 
 ## Satire is never news
 
@@ -162,17 +232,75 @@ trade. A wave of trades matters only as what it implies about pricing or distres
 ## Numbers
 
 THE ECONOMY and CRE SNAPSHOT each open with a numbers line built from `market.json`.
-Available keys may include `y2` `y10` `y30` (Treasury yields, percent),
-`y10_wk_bps` (weekly move in basis points), `curve_2s10s_bps`, `mortgage30`,
-`cre_delinquency_pct`, `unemployment_pct`, `hy_spread_pct`, and `spy`
-`spy_day_pct` `spy_wk_pct`. Some may be absent. SPY is charted on the cover
-already, so mention it in THE ECONOMY only when the move is itself news. Ignore
-the `*_series` and `spy_intraday` arrays — they are chart data.
+It holds scalars only (the chart data lives elsewhere and is not for you), and
+**any key may be absent**: a source that failed, or whose latest print was too old
+to state as current, is left out rather than guessed. When a key is missing, say
+nothing about it. Do not write "data unavailable", and do not fill the gap from
+memory or from a headline.
+
+Each source carries its own date. **Cite a date only from that series' own date
+key**, never from another series and never from `generated_at` (which is only when
+the file was written).
+
+Treasury yields, dated by `treasury_as_of` (YYYY-MM-DD):
+- `y2`, `y10`, `y30` — the 2-, 10- and 30-year yields, in percent (`4.67` is 4.67%).
+- `y2_wk_bps`, `y10_wk_bps`, `y30_wk_bps` — change over five business days, in
+  basis points (`-6` is down 6bp on the week).
+- `curve_2s10s_bps` — the 10Y minus the 2Y, in basis points; negative means the
+  curve is inverted.
+- The Treasury print is normally the **previous business day's close**, in both
+  editions. On a Monday it is Friday's; after a holiday it is older. Never call it
+  today's.
+
+The 30-year mortgage rate, dated by `mortgage30_as_of` (YYYY-MM-DD):
+- `mortgage30` — Freddie Mac's weekly survey rate, in percent. It is published on
+  Thursdays, so `mortgage30_as_of` is usually several days before the 10Y's date.
+- `mortgage30_wk_bps` — change from the previous week's survey, in basis points.
+
+SPY, the ETF that tracks the S&P 500:
+- `spy` — the price when the numbers were collected, in dollars; `spy_prev_close`
+  — the close before `spy_session`.
+- `spy_session` (YYYY-MM-DD) — the trading session `spy` and `spy_day_pct`
+  describe. **`spy_day_pct` is the percent move on `spy_session`, which is not
+  always today.** On a weekend or market holiday it is the last session (Friday's
+  move, in a Sunday issue); in the morning edition it is at most the first minutes
+  of trading, or pre-market. Say "Friday" or "early trading" accordingly, never
+  "today" unless `spy_session` is today.
+- `spy_wk_pct` — percent move over five sessions; `spy_as_of` — the date of the
+  latest daily close or quote behind it. `spy_vol_pct` is a volatility input for
+  the cover art; leave it alone.
+- These were collected roughly an hour before the email is sent, and the market
+  keeps trading. Describe the direction and rough size of the move ("SPY is up
+  about 1% this session"), not a level to the cent. SPY is charted on the cover
+  already, so mention it in THE ECONOMY only when the move is itself news.
+
+Slower series from FRED. Each is an **object**, `{"value": <number>,
+"as_of": "YYYY-MM-DD"}`: use `.value` for the figure and `.as_of` for its date.
+FRED dates an observation by the **first day of the period it measures**:
+`2026-09-01` is the September figure (released in October), `2026-04-01` on a
+quarterly series is the second quarter. Cite the monthly and quarterly series as
+the period ("September unemployment", "in the second quarter"), never as a day;
+only the daily high-yield spread's `as_of` is an actual day.
+- `cre_delinquency_pct` — the share of commercial real estate loans at US banks
+  past due, in percent. Quarterly, and released with a lag of months.
+- `unemployment_pct` — the US unemployment rate, in percent. Monthly.
+- `cpi_core_yoy_pct` — core inflation (CPI excluding food and energy) as a
+  **year-over-year rate** in percent: `3.1` means core prices are 3.1% higher than
+  twelve months earlier. It is already a rate; do not compute anything from it, and
+  do not call it a monthly change. Monthly.
+- `hy_spread_pct` — the high-yield bond spread over Treasuries, in percentage
+  points (`3.10` is 310bp): how much extra lenders charge risky borrowers. Daily.
 
 THE ECONOMY's numbers line carries the rate path. The CRE numbers line is shorter
 and leads with the 10Y as a borrowing cost. Translate on first use per the spec —
 the 10Y line should say what it does, not just what it is. Set `"note": true` on the
 numbers item so it renders as a callout rather than a bullet.
+
+In the afternoon edition, the Treasury, mortgage and FRED figures are almost always
+the same prints the morning stated: they update once a day, once a week, or less.
+Do not present them as news. The rate path is still stated, briefly, as the same
+print the morning used, and the rest of the numbers line goes to whatever did move
+(SPY's session, a print released since 9:00 that is in the candidates).
 
 ## Links
 
@@ -181,6 +309,12 @@ is not in that file is dropped automatically before publishing, and the item shi
 unlinked — so inventing or editing a URL can only cost you, never help. If you want
 an item that has no candidate URL, set `url` to null and keep the item. An unlinked
 true item is fine. A confidently wrong link is not.
+
+**`url` is the only link an item has.** Never put a link, an `<a>` tag, a bare URL,
+an image, or any HTML other than `<b>` and `<i>` into `text` or `front_matter`.
+The link checks read only the `url` field, so a link written into the text would
+skip them entirely; `publish.py` strips every other tag to its plain text, so it
+can only make the item read worse.
 
 Copy each item's `src` verbatim too — it becomes the source tag and is already the
 correct outlet name.
@@ -247,7 +381,9 @@ Keep its five-clause shape and drop its greeting:
 ## Writing
 
 Follow the editorial spec for voice, structure, item counts, commentary, and the
-jargon-translation rules — it is binding and it is in the repo. Beyond it:
+jargon-translation rules — it is binding and it is in the repo. It describes the
+whole pipeline; your part of it is the one set out in this file, and where the two
+ever disagree, this file is the more specific and wins. Beyond it:
 
 - Wrap every company, fund, and person name in `<b>...</b>`.
 - Write `&amp;` for a literal ampersand. No emoji, no arrows, no decorative glyphs —

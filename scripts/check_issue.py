@@ -10,9 +10,12 @@ its error to /dev/null and fallback.py overwrote issue.json, so why the curated
 file was rejected could not be recovered afterwards.
 
 So now: a rejected file says why, in the log, and with --reject-to it is moved
-aside (with the curator's execution log, when there is one) for the run's
-artifact, which also leaves no issue.json behind for the next attempt to be
+aside (with a summary of the curator's execution log, when there is one) for the
+run's artifact, which also leaves no issue.json behind for the next attempt to be
 confused by. Exit 0 = ship it, exit 1 = retry or fall back.
+
+The shape rules live in normalize(), which publish.py imports, so "the check
+passed" and "publish.py can render it" are the same statement.
 
   check_issue.py                                   validate only
   check_issue.py --reject-to rejected --label a1 \
@@ -20,6 +23,7 @@ confused by. Exit 0 = ship it, exit 1 = retry or fall back.
 """
 
 import argparse
+import html
 import json
 import os
 import shutil
@@ -29,63 +33,200 @@ import sys
 # this thin is a curator that stopped early, not a quiet news day.
 MIN_ITEMS = 10
 
+# The canonical titles and block labels, compared after html.unescape and upper,
+# the same way sections.py --record credits them. A heading the tracker cannot
+# match ("DALLAS/TEXAS", "IPOs and Listings") silently counts that block as dark,
+# so a spelling slip would escalate a section that actually shipped. Warned about
+# only: a curated issue with a misspelt heading still beats the fallback.
+CANON = {
+    "FRONT MATTER":    (),
+    "THE ECONOMY":     (),
+    "CRE SNAPSHOT":    (),
+    "CRE DESK":        ("RETAIL", "PROPTECH & CRE-TECH"),
+    "DEAL FLOW":       ("VC", "IPOS & LISTINGS", "M&A / STRATEGIC", "DEBT",
+                        "FUNDS & SECONDARIES", "DISTRESSED"),
+    "AI & ENTERPRISE": (),
+    "UNITED STATES":   (),
+    "THE WORLD":       (),
+    "DALLAS / TEXAS":  ("NEWS", "FOOD & DRINK", "GOING OUT"),
+    "SPORTS":          ("COWBOYS & NFL", "MAVERICKS", "VIRGINIA"),
+    "WORTH READING":   (),
+}
 
-def problems(path: str) -> list[str]:
-    """Every reason the file cannot ship. Empty list = shippable."""
-    if not os.path.exists(path):
-        return [f"{path} was not written"]
-    try:
-        with open(path) as f:
-            issue = json.load(f)
-    except json.JSONDecodeError as e:
-        return [f"{path} is not valid JSON: {e}"]
-    except Exception as e:
-        return [f"{path} could not be read: {type(e).__name__}: {e}"]
+_STR = (str, type(None))
+_LIST = (list, type(None))
+
+
+def _canon(s: str | None) -> str:
+    return html.unescape(s or "").strip().upper()
+
+
+def _kind(v) -> str:
+    return type(v).__name__
+
+
+def normalize(issue) -> tuple[dict | None, list[str]]:
+    """The one definition of a well-formed issue, shared with publish.py.
+
+    Returns a cleaned copy plus every defect it had to repair. This file rejects
+    an issue with any defect; publish.py renders the cleaned copy. Before the
+    two shared it, the check passed a list-typed front_matter, an untitled
+    section and a list-typed url, and each then crashed publish.py after the
+    fallback step had already trusted the check, so nothing went out at all.
+    None means there is nothing to render.
+    """
     if not isinstance(issue, dict):
-        return [f"top level is {type(issue).__name__}, not an object"]
-
+        return None, [f"top level is {_kind(issue)}, not an object"]
     sections = issue.get("sections")
     if not isinstance(sections, list):
-        return [f"'sections' is {type(sections).__name__}, not a list"]
+        return None, [f"'sections' is {_kind(sections)}, not a list"]
 
-    out, items = [], 0
+    bad = []
+    fm = issue.get("front_matter")
+    if not isinstance(fm, _STR):
+        bad.append(f"front_matter is {_kind(fm)}, not a string")
+        fm = None
+
+    clean = []
     for n, s in enumerate(sections):
         if not isinstance(s, dict):
-            out.append(f"section {n} is {type(s).__name__}, not an object")
+            bad.append(f"section {n} is {_kind(s)}, not an object")
+            continue
+        title = s.get("title")
+        if not (isinstance(title, str) and title.strip()):
+            bad.append(f"section {n} has no 'title' string")
             continue
         # null blocks/items are an empty block, not a defect: publish.py reads
         # them the same way.
-        for b in s.get("blocks") or []:
+        blocks = s.get("blocks")
+        if not isinstance(blocks, _LIST):
+            bad.append(f"'blocks' in {title!r} is {_kind(blocks)}, not a list")
+        blocks_out = []
+        for b in blocks if isinstance(blocks, list) else []:
             if not isinstance(b, dict):
-                out.append(f"a block in {s.get('title')!r} is not an object")
+                bad.append(f"a block in {title!r} is not an object")
                 continue
-            for i in b.get("items") or []:
+            label = b.get("label")
+            if not isinstance(label, _STR):
+                bad.append(f"a block label in {title!r} is {_kind(label)}, not a string")
+                label = None
+            items = b.get("items")
+            if not isinstance(items, _LIST):
+                bad.append(f"'items' in {title!r} is {_kind(items)}, not a list")
+            items_out = []
+            for i in items if isinstance(items, list) else []:
                 # publish.py reads it["text"] unguarded, so a missing key would
                 # crash the send; an empty string merely does not count.
                 if not (isinstance(i, dict) and isinstance(i.get("text"), str)):
-                    out.append(f"an item in {s.get('title')!r} has no 'text' string")
-                elif i["text"].strip():
-                    items += 1
+                    bad.append(f"an item in {title!r} has no 'text' string")
+                    continue
+                i = dict(i)
+                for k in ("url", "src"):
+                    if not isinstance(i.get(k), _STR):
+                        bad.append(f"an item in {title!r} has a {_kind(i[k])} {k!r}")
+                        i[k] = None
+                items_out.append(i)
+            blocks_out.append({**b, "label": label, "items": items_out})
+        clean.append({**s, "title": title, "blocks": blocks_out})
+    return {**issue, "front_matter": fm, "sections": clean}, bad
+
+
+def lint(issue: dict) -> list[str]:
+    """Editorial slips worth seeing in the log, never worth rejecting for.
+    Takes a normalized issue."""
+    out = []
+    for s in issue["sections"]:
+        t = _canon(s["title"])
+        labels = CANON.get(t)
+        if labels is None:
+            out.append(f"section title {s['title']!r} is not canonical — "
+                       "sections.py will not credit it")
+            continue
+        for b in s["blocks"]:
+            lab = b.get("label")
+            if lab is not None and b["items"] and _canon(lab) not in labels:
+                out.append(f"block label {lab!r} under {s['title']!r} is not canonical")
+    # publish.py unwraps all markup but b/strong/i/em, so a link written into
+    # text never ships live. Still worth knowing the curator is doing it.
+    texts = [issue.get("front_matter") or ""] + [
+        i["text"] for s in issue["sections"] for b in s["blocks"] for i in b["items"]]
+    n = sum(1 for t in texts if "<a " in t.lower() or "<img" in t.lower())
+    if n:
+        out.append(f"{n} text field(s) carry <a> or <img> markup — stripped at "
+                   "publish; the url field is the only link")
+    return out
+
+
+def load(path: str) -> tuple[dict | None, list[str]]:
+    """The normalized issue (None if unreadable) and every reason it cannot ship."""
+    if not os.path.exists(path):
+        return None, [f"{path} was not written"]
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as e:
+        return None, [f"{path} is not valid JSON: {e}"]
+    except Exception as e:
+        return None, [f"{path} could not be read: {type(e).__name__}: {e}"]
+    issue, out = normalize(raw)
+    if issue is None:
+        return None, out
+    items = sum(1 for s in issue["sections"] for b in s["blocks"]
+                for i in b["items"] if i["text"].strip())
     if items < MIN_ITEMS:
         out.append(f"only {items} items with text (need at least {MIN_ITEMS})")
-    fm = issue.get("front_matter")
-    if not (isinstance(fm, str) and fm.strip()):
-        # Worth seeing, not worth rejecting: a full curated issue without its
-        # opening sentence still beats the unedited fallback.
-        print("::warning::front_matter is missing or empty — shipping without it")
-    return out
+    return issue, out
+
+
+def problems(path: str) -> list[str]:
+    """Every reason the file cannot ship. Empty list = shippable."""
+    return load(path)[1]
+
+
+def _summarize(log: str, dest: str) -> None:
+    """Keep the curator's run as a summary, never as the raw transcript.
+
+    The repo is public, so every artifact is downloadable by any GitHub user,
+    and the execution log is the full SDK transcript that claude-code-action
+    itself keeps out of the run log ("full output hidden for security"). The
+    summary (turns, cost, denials, final text) is what diagnosing 2026-10-09
+    actually needed. The raw file is deleted whatever happens here, which also
+    keeps an attempt that dies before writing its own log from having this
+    one's filed under its name.
+    """
+    try:
+        import curator_summary
+        s = curator_summary.summarize(log)
+        if s is None:
+            print(f"  {log}: no readable execution log to summarize")
+        else:
+            with open(dest, "w") as f:
+                json.dump(s, f, indent=1)
+    except Exception as e:
+        print(f"::warning::could not summarize {log} ({type(e).__name__}: {e})")
+    try:
+        os.remove(log)
+    except OSError as e:
+        print(f"::warning::could not delete {log} ({type(e).__name__}: {e})")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--issue", default="issue.json")
     ap.add_argument("--reject-to", metavar="DIR",
-                    help="on rejection, move the issue (and --log) here")
+                    help="on rejection, move the issue (and a summary of --log) here")
     ap.add_argument("--label", default="check", help="name for the rejected files")
-    ap.add_argument("--log", help="curator execution log to keep on rejection")
+    ap.add_argument("--log", help="curator execution log to summarize on rejection")
     a = ap.parse_args()
 
-    bad = problems(a.issue)
+    issue, bad = load(a.issue)
+    if issue is not None:
+        for w in lint(issue):
+            print(f"::warning::{a.label}: {w}")
+        if not (issue["front_matter"] or "").strip():
+            # Worth seeing, not worth rejecting: a full curated issue without its
+            # opening sentence still beats the unedited fallback.
+            print("::warning::front_matter is missing or empty — shipping without it")
     if not bad:
         print(f"{a.issue}: ok")
         return
@@ -97,9 +238,8 @@ def main() -> None:
         if os.path.exists(a.issue):
             shutil.move(a.issue, os.path.join(a.reject_to, f"issue.{a.label}.json"))
         if a.log and os.path.exists(a.log):
-            # Moved, not copied: an attempt that dies before writing its own log
-            # must not have this one's filed under its name.
-            shutil.move(a.log, os.path.join(a.reject_to, f"execution.{a.label}.json"))
+            _summarize(a.log, os.path.join(a.reject_to,
+                                           f"execution.{a.label}.summary.json"))
         with open(os.path.join(a.reject_to, "reasons.txt"), "a") as f:
             for p in bad:
                 f.write(f"{a.label}: {p}\n")
