@@ -39,7 +39,9 @@ except Exception:                                            # pragma: no cover
 
 SCALE = 2                       # render at 2x, present at 1x, for retina mail
 COVER = (620, 300)
-BUDGET = 3_000_000              # total bytes of imagery per issue
+GREET_W = 420                   # the greeting's display width in compass.greet()
+BUDGET = 3_000_000              # total bytes of imagery per issue; over it, skip
+EXPECT = 1_000_000              # a normal issue is ~0.9 MB (2026-10-14); over it, warn
 
 TH = {
     "am": dict(accent=(238, 255, 140), label="MORNING EDITION", greet="Good morning"),
@@ -85,9 +87,22 @@ def _mix(a, b, t):
     return tuple(int(round(x + (y - x) * t)) for x, y in zip(a, b))
 
 
-def _encode(frames, ms) -> bytes:
-    """One shared palette across frames — per-frame adaptive palettes flicker."""
-    ref = frames[0].quantize(colors=64, method=Image.Quantize.MEDIANCUT)
+def _encode(frames, ms, extra=()) -> bytes:
+    """One shared palette across frames — per-frame adaptive palettes flicker.
+
+    The palette is cut from frame 1, so a colour that only appears later snaps to
+    its nearest neighbour there. `extra` lists colours that must survive exactly;
+    they come out of the 64, because a 65th colour costs every frame a bit per
+    pixel.
+    """
+    n = 64 - len(extra)
+    ref = frames[0].quantize(colors=n, method=Image.Quantize.MEDIANCUT)
+    if extra:
+        pal = (ref.getpalette() or [])[:n * 3]
+        for c in extra:
+            pal.extend(c)
+        ref = Image.new("P", (1, 1))
+        ref.putpalette(pal)
     seq = [f.quantize(palette=ref, dither=Image.Dither.NONE) for f in frames]
     buf = io.BytesIO()
     seq[0].save(buf, format="GIF", save_all=True, append_images=seq[1:],
@@ -107,12 +122,39 @@ def _et_min(ms: int) -> float:
     return t.hour * 60 + t.minute + t.second / 60
 
 
+def _span(hist) -> str:
+    """How much history the 10Y chart covers. market.py keeps at most a year, and
+    from spring to December only this year's prints, which "1Y" misdescribed."""
+    try:
+        d0, d1 = (dt.date.fromisoformat(hist[i][0]) for i in (0, -1))
+    except (IndexError, TypeError, ValueError):
+        return "1Y"
+    if (d1 - d0).days >= 330:
+        return "1Y"
+    return "YTD" if d0.year == d1.year else f"{max(1, (d1 - d0).days // 30)}M"
+
+
+def _session(market: dict) -> tuple[dt.date | None, bool]:
+    """The trading session SPY's tape and day % describe, and whether it is today.
+
+    One test for the chart caption and the rail. On a weekend or a market holiday
+    the tape is the last session's, and the rail used to print "+0.59% today"
+    under a caption that read "FRI OCT 9".
+    """
+    try:
+        day = dt.date.fromisoformat(market.get("spy_session") or "")
+    except (TypeError, ValueError):
+        return None, False
+    return day, day == dt.datetime.now(ZoneInfo("America/Chicago")).date()
+
+
 def _weather(market: dict) -> dict:
     """Read the day's numbers into drawing parameters. Missing data is flat.
 
     `pts` are (x, value) with x in 0..1 across the chart; `ref` is the level the
     dashed reference line marks; `pre` is the x where the regular session opens
-    (everything left of it is pre-market and drawn dimmer), or None.
+    (everything left of it is pre-market and drawn dimmer), or None; `session` is
+    _session()'s answer, so the rail reads the same test the caption does.
     """
     curve = market.get("curve_2s10s_bps")
     intra = [(_et_min(x), v) for x, v in market.get("spy_intraday") or []]
@@ -121,11 +163,10 @@ def _weather(market: dict) -> dict:
     vol = market.get("spy_vol_pct") or 0.8
     gap = 27 - (vol - 0.4) * 8
     warm = (market.get("spy_day_pct") or 0) / 1.2
+    sess, today = _session(market)
     if len(intra) >= 2:
-        sess = market.get("spy_session", "")
-        today = dt.datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
-        when = "TODAY" if sess == today else (
-            dt.date.fromisoformat(sess).strftime("%a %b %-d").upper() if sess else "LAST SESSION")
+        when = "TODAY" if today else (
+            sess.strftime("%a %b %-d").upper() if sess else "LAST SESSION")
         pts = [((m - AX0) / (AX1 - AX0), v) for m, v in intra]
         ref = market.get("spy_prev_close")
         cap = f"SPY  ·  {when}  ·  ET"
@@ -137,16 +178,17 @@ def _weather(market: dict) -> dict:
         pre = None
         warm = (market.get("spy_wk_pct") or 0) / 3.0
     else:
-        ser = [v for _, v in market.get("y10_series") or []]
+        hist = market.get("y10_series") or []
+        ser = [v for _, v in hist]
         pts = [(i / max(1, len(ser) - 1), v) for i, v in enumerate(ser)]
         ref = ser[-6] if len(ser) >= 6 else None
-        cap = "US 10Y  ·  1Y DAILY"
+        cap = f"US 10Y  ·  {_span(hist)} DAILY"
         pre = None
         vol_ = statistics.pstdev(ser[-30:]) if len(ser) >= 8 else 0.06
         gap = 27 - vol_ * 170
         warm = (market.get("y10_wk_bps") or 0) / 22.0
     return {
-        "pts": pts, "ref": ref, "cap": cap, "pre": pre,
+        "pts": pts, "ref": ref, "cap": cap, "pre": pre, "session": (sess, today),
         # steeper curve tilts the field up; inversion tilts it down
         "angle": math.radians(max(-9.0, min(23.0, ((curve if curve is not None else 40) + 50) / 200 * 32 - 9))),
         # more realised vol packs the hairlines tighter
@@ -156,20 +198,38 @@ def _weather(market: dict) -> dict:
     }
 
 
+# Steps in the field's accent hand-off. A hand-off takes 13 frames (one gap, at two
+# gaps per 26-frame loop), so 12 steps is about one per frame.
+TINTS = 12
+
+
+def _ramp(accent) -> list:
+    """HAIR, then each hand-off step, up to the full accent tint at index TINTS."""
+    return [_mix(HAIR, accent, 0.30 * k / TINTS) for k in range(TINTS + 1)]
+
+
 def _field(d, w, h, wx, accent, phase):
-    """The data-bound backdrop: a drifting hairline field."""
+    """The data-bound backdrop: a drifting hairline field.
+
+    Every line drifts two gaps per loop, so the last frame runs straight into the
+    first. The accent used to ride every 7th line counted from the left edge, and
+    two gaps is not a multiple of seven, so the tinted lines snapped back ~77px at
+    the seam every 1.8s (sweep, 2026-10-14). The tint now belongs to every 7th
+    place on a fixed lattice: a line takes it on as it drifts into one of those
+    places and hands it to the next as it leaves, so no frame jumps. The hand-off
+    steps through _ramp(), whose colours cover() adds to the GIF palette.
+    """
     gap, ang = wx["gap"] * SCALE, wx["angle"]
     dx = math.tan(ang) * h
     span = int(w + abs(dx)) + gap * 2
-    drift = (phase * gap * 2) % (gap * 2)
-    x = -abs(dx) - gap + drift
-    i = 0
+    x0 = -abs(dx) - gap
+    x = x0 + (phase * gap * 2) % (gap * 2)
+    ramp = _ramp(accent)
     while x < span:
-        bright = i % 7 == 0
-        col = _mix(HAIR, accent, 0.30) if bright else HAIR
-        d.line([(x, h), (x + dx, 0)], fill=col, width=1)
+        u = ((x - x0) / gap) % 7                    # place on the fixed lattice
+        lit = max(0.0, 1.0 - min(u, 7 - u))         # 1 on an accent place, 0 a gap off
+        d.line([(x, h), (x + dx, 0)], fill=ramp[round(lit * TINTS)], width=1)
         x += gap
-        i += 1
 
 
 def cover(edition: str, market: dict, date: str, stamp: str,
@@ -192,6 +252,22 @@ def cover(edition: str, market: dict, date: str, stamp: str,
         return (gx + gw * x, gy + gh - (v - lo) / (hi - lo) * gh)
 
     GRID = (58, 58, 58)
+
+    # standing rail — SPY, the 10Y beside it, the name, the issue. Each figure's
+    # weekly move sits on its label line so the big numbers never run into the
+    # right-hand rail. SPY's day says "today" only when the tape is today's;
+    # otherwise it names the session's day, the same test as the chart caption.
+    figs = []
+    if market.get("spy") is not None:
+        day = market.get("spy_day_pct")
+        sess, today = wx["session"]
+        when = "today" if today else (sess.strftime("%a").upper() if sess else "")
+        figs.append(("SPY", f"{market['spy']:.2f}",
+                     f"{day:+.2f}% {when}".rstrip() if day is not None else ""))
+    cur = market.get("y10")
+    bps = market.get("y10_wk_bps")
+    figs.append(("US 10Y", f"{cur:.2f}%" if cur is not None else "—",
+                 f"{bps:+d}bp / wk" if bps is not None else ""))
 
     frames = []
     for f in range(N):
@@ -246,18 +322,6 @@ def cover(edition: str, market: dict, date: str, stamp: str,
             r = (3.4 + 1.5 * math.sin(ph * math.tau)) * s
             d.ellipse([hx - r, hy - r, hx + r, hy + r], fill=INK)
 
-        # standing rail — SPY, the 10Y beside it, the name, the issue. Each
-        # figure's weekly move sits on its label line so the big numbers never
-        # run into the right-hand rail.
-        figs = []
-        if market.get("spy") is not None:
-            day = market.get("spy_day_pct")
-            figs.append(("SPY", f"{market['spy']:.2f}",
-                         f"{day:+.2f}% today" if day is not None else ""))
-        cur = market.get("y10")
-        bps = market.get("y10_wk_bps")
-        figs.append(("US 10Y", f"{cur:.2f}%" if cur is not None else "—",
-                     f"{bps:+d}bp / wk" if bps is not None else ""))
         x = 34 * s
         fl, fb, fm = font(11 * s, True), font(30 * s, True), font(11 * s)
         for lab, big, chg in figs:
@@ -275,7 +339,10 @@ def cover(edition: str, market: dict, date: str, stamp: str,
         fw = font(11 * s, True)
         d.text((W - 34 * s - d.textlength(who, font=fw), 258 * s), who, font=fw, fill=DIM)
         frames.append(im)
-    return _encode(frames, 70)
+    # Frame 1 holds only the plain and fully tinted hairlines; the steps between
+    # appear later and would otherwise snap to one or the other, turning the
+    # field's smooth hand-off back into a jump.
+    return _encode(frames, 70, extra=_ramp(accent)[1:TINTS])
 
 
 # The crawl used to run continuously at ~280px/s: the whole strip passed in 1.8s
@@ -390,27 +457,48 @@ def greeting(edition: str, name: str) -> bytes | None:
     HTML underneath it, so the editorial content never becomes an image."""
     t = TH[edition]
     s = SCALE
-    W, H, N = COVER[0] * s, 46 * s, 28
+    # Drawn for the 420px slot compass.greet() shows it in. It used to be drawn
+    # 620 wide and shown at 420, so the 27px line landed at ~18px — smaller than
+    # the 26px live text that stands in for it with images off.
+    W, H, N = GREET_W * s, 46 * s, 28
     text = f"{t['greet']}, {name}."
-    fo = font(27 * s, True)
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    size = 27
+    fo = font(size * s, True)
     tw = probe.textlength(text, font=fo)
+    while tw > W and size > 16:
+        # A longer name steps the type down rather than running off the card.
+        size -= 1
+        fo = font(size * s, True)
+        tw = probe.textlength(text, font=fo)
+    # Same baseline at any size, so the accent bar sits under the text as designed.
+    try:
+        y = 6 * s + font(27 * s, True).getmetrics()[0] - fo.getmetrics()[0]
+    except AttributeError:                       # a bitmap fallback font has no metrics
+        y = 6 * s
     frames = []
     for f in range(N):
         ph = f / N
         im = Image.new("RGB", (W, H), (255, 255, 255))
         d = ImageDraw.Draw(im)
-        d.text((0, 6 * s), text, font=fo, fill=(17, 17, 17))
+        d.text((0, y), text, font=fo, fill=(17, 17, 17))
         # an accent bar wipes across the baseline and settles under the name
         x = (0.5 - 0.5 * math.cos(ph * math.tau)) * tw
         d.rectangle([0, 38 * s, x, 42 * s], fill=t["accent"])
         frames.append(im)
-    return _encode(frames, 55)
+    # The bar is a sliver on frame 1, too few pixels to win a palette slot: the
+    # afternoon's orange bar shipped as a grey-brown (156, 135, 120).
+    return _encode(frames, 55, extra=[t["accent"]])
 
 
 def build(edition: str, market: dict, date: str, stamp: str,
-          issue_no: int, name: str) -> dict:
-    """Every asset for one issue, keyed by content-id. Never raises."""
+          issue_no: int, name: str, only=None) -> dict:
+    """Every asset for one issue, keyed by content-id. Never raises.
+
+    `only` names the assets to render (an iterable of the keys below), None for
+    all. publish.refresh() redraws just the cover and ticker from a fresh tape; it
+    used to re-render all five inside the send hold and keep two.
+    """
     jobs = {
         "cover":  lambda: cover(edition, market, date, stamp, issue_no, name),
         "greet":  lambda: greeting(edition, name),
@@ -418,6 +506,9 @@ def build(edition: str, market: dict, date: str, stamp: str,
         "marker": lambda: marker(edition),
         "spark":  lambda: spark(edition, market),
     }
+    if only is not None:
+        want = {only} if isinstance(only, str) else set(only)
+        jobs = {k: fn for k, fn in jobs.items() if k in want}
     out, total = {}, 0
     for key, fn in jobs.items():
         if Image is None:
@@ -438,4 +529,9 @@ def build(edition: str, market: dict, date: str, stamp: str,
         out[key] = data
         print(f"  art: {key} {len(data)/1024:.0f} kB")
     print(f"  art: {len(out)} assets, {total/1024:.0f} kB total")
+    if total > EXPECT:
+        # Not a limit — nothing is dropped. A regression in GIF weight costs the
+        # reader mobile data and shows up nowhere else.
+        print(f"::warning::art: {total/1024:.0f} kB of imagery, over the "
+              f"~{EXPECT//1000} kB an issue normally weighs")
     return out
