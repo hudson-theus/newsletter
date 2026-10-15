@@ -165,13 +165,13 @@ what moved since then, not the morning again.
 
 `candidates.json` for a PM run carries `this_morning`: every item the morning
 edition actually shipped (its FRONT MATTER sentence may be listed too), as
-`{"section", "title", "url"}`. `section` is the
-issue section it ran in, `title` is the original headline (or the morning's own
-text when no headline was on hand), and `url` is its link, or null. This
-morning's items are deliberately **still in the candidate pool**, because a
-follow-up needs the original story within reach. So match each candidate you
-consider against `this_morning`, by `url` first and then by story: a different
-outlet's version of the same news is the same item.
+`{"section", "title", "url"}`. `section` is the issue section it ran in, `title`
+is the original headline (or the morning's own text when no headline was on
+hand), and `url` is its link, or null. This morning's items are deliberately
+**still in the candidate pool**, because a follow-up needs the original story
+within reach. So match each candidate you consider against `this_morning`, by
+`url` first and then by story: a different outlet's version of the same news is
+the same item.
 
 - **Lead with what moved since 9:00.** FRONT MATTER and THE ECONOMY open on the
   afternoon's developments: a print or a Fed remark since the morning, a market
@@ -278,8 +278,9 @@ Slower series from FRED. Each is an **object**, `{"value": <number>,
 "as_of": "YYYY-MM-DD"}`: use `.value` for the figure and `.as_of` for its date.
 FRED dates an observation by the **first day of the period it measures**:
 `2026-09-01` is the September figure (released in October), `2026-04-01` on a
-quarterly series is the second quarter. Cite these as the period ("September
-unemployment", "in the second quarter"), never as a day.
+quarterly series is the second quarter. Cite the monthly and quarterly series as
+the period ("September unemployment", "in the second quarter"), never as a day;
+only the daily high-yield spread's `as_of` is an actual day.
 - `cre_delinquency_pct` — the share of commercial real estate loans at US banks
   past due, in percent. Quarterly, and released with a lag of months.
 - `unemployment_pct` — the US unemployment rate, in percent. Monthly.

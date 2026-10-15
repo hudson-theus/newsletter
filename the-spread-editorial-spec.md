@@ -64,7 +64,7 @@ the 9:00 issue five hours earlier; the 2:00 issue tells him what moved since.
   in the afternoon they are not minimums. A 30-item afternoon with four sections
   omitted is a good afternoon.
 - **If the morning edition failed or never shipped**, the afternoon run receives
-  no `this_morning`, and the reader has had nothing that day. It is then written
+  no `this_morning` (or an empty one), and the reader has had nothing that day. It is then written
   as a normal full edition.
 
 ---
