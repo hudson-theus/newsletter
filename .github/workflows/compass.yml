@@ -209,7 +209,7 @@ jobs:
       AT: ${{ needs.decide.outputs.at }}
       SOURCE: ${{ needs.decide.outputs.source }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # This job may have waited in its concurrency group behind another run of
       # the same edition (the Worker's 08:45 dispatch always queues behind its
@@ -360,7 +360,7 @@ jobs:
         timeout-minutes: 15
         if: steps.gate.outputs.go == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1 (2026-10-14)
+        uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1 (2026-10-14)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -396,7 +396,7 @@ jobs:
         timeout-minutes: 15
         if: steps.gate.outputs.go == 'true' && steps.check1.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1 (2026-10-14)
+        uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1 (2026-10-14)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -429,7 +429,7 @@ jobs:
         timeout-minutes: 8
         if: steps.gate.outputs.go == 'true' && steps.check2.outcome == 'failure'
         continue-on-error: true
-        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855 # v1 (2026-10-14)
+        uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1 (2026-10-14)
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -532,7 +532,7 @@ jobs:
         if: always() && steps.gate.outputs.go == 'true' && env.SEND != '' && hashFiles('sent.ok') != ''
         # The second attempt below decides the job's fate, not this one.
         continue-on-error: true
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.decide.outputs.artifact }}
           path: |
@@ -550,7 +550,7 @@ jobs:
       - name: Mark shipped (second attempt)
         id: mark2
         if: always() && steps.mark.outcome == 'failure'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.decide.outputs.artifact }}
           path: |
@@ -595,7 +595,7 @@ jobs:
       # what makes the next one diagnosable.
       - name: Keep rejected curation output
         if: always() && steps.gate.outputs.go == 'true' && hashFiles('rejected/**') != ''
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rejected-${{ github.run_id }}
           path: rejected/
@@ -606,7 +606,7 @@ jobs:
       # this a dry run would produce nothing to look at.
       - name: Keep dry-run preview
         if: success() && steps.gate.outputs.go == 'true' && env.SEND == ''
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: preview-${{ needs.decide.outputs.edition }}-${{ github.run_id }}
           path: |
@@ -669,7 +669,7 @@ jobs:
 
       - name: Keep failure output for debugging
         if: failure() && steps.gate.outputs.go == 'true'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: failed-${{ github.run_id }}
           path: |
