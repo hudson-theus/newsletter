@@ -178,7 +178,20 @@ def _weather(market: dict) -> dict:
         ref = daily[-6]
         cap = "SPY  ·  1Y DAILY"
         pre = None
-        warm = (market.get("spy_wk_pct") or 0) / 3.0
+        wk = market.get("spy_wk_pct")
+        cached = market.get("spy_cache_as_of")
+        if cached:
+            # Closes from state/spy.json, because no SPY source answered this run.
+            # The caption says how old they are; the field still reads their week
+            # and their vol, which market.py did not compute for them.
+            try:
+                cap += f"  ·  TO {dt.date.fromisoformat(cached):%b %-d}".upper()
+            except ValueError:
+                cap += "  ·  CACHED"
+            wk = (daily[-1] / daily[-6] - 1) * 100
+            rets = [(b / a - 1) * 100 for a, b in zip(daily[-31:], daily[-30:])]
+            gap = 27 - (statistics.pstdev(rets) - 0.4) * 8
+        warm = (wk or 0) / 3.0
     else:
         hist = market.get("y10_series") or []
         ser = [v for _, v in hist]

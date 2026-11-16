@@ -21,8 +21,11 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("usage: alert.py SUBJECT [BODY]")
         return 0
-    subject = sys.argv[1]
-    body = sys.argv[2] if len(sys.argv) > 2 else ""
+    return alert(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")
+
+
+def alert(subject: str, body: str = "") -> int:
+    """The same, for scripts that import it (market.py). Never raises."""
     # An annotation is one line; the body follows in the log and the summary.
     print(f"::warning::{subject}")
     if body:

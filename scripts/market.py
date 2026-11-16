@@ -12,7 +12,10 @@ Everything here is free and needs no secret in this repo:
     the cover chart, plus a year of daily closes for the weekly move and realised
     vol. Yahoo's chart API was the obvious choice and
     answers 429 to scripted clients; Stooq now serves a JS challenge. Verified
-    2026-09-22.
+    2026-09-22. Since 2026-11-10 Nasdaq answers 403 to GitHub's runners, so it is
+    read through the Worker's /spy route first, then direct, then Tiingo (keyed,
+    as a Worker secret). When all three fail, state/spy.json (the last shipped
+    run's closes) still charts SPY on the cover. See the SPY section below.
   - Treasury.gov daily yield curve XML. The 10Y is the number that sets what the
     reader's clients' buyers can borrow at, so it leads. Verified 2026-08-27.
   - Freddie Mac PMMS weekly mortgage survey, as the housing-side read.
@@ -55,6 +58,7 @@ import os
 import statistics
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -65,7 +69,10 @@ NS = {"a": "http://www.w3.org/2005/Atom",
 CT = zoneinfo.ZoneInfo("America/Chicago")
 
 # Chart data. Written to market_series.json, never to market.json.
-SERIES_KEYS = ("y10_series", "spy_series", "spy_intraday")
+SERIES_KEYS = ("y10_series", "spy_series", "spy_intraday",
+               # set only when spy_series came from state/spy.json; art.py dates
+               # the cover caption by it. Kept out of the curator's market.json.
+               "spy_cache_as_of")
 
 
 def load_market(path: str = "market.json") -> dict:
@@ -221,48 +228,77 @@ def freddie() -> dict:
     return out
 
 
-def _nasdaq(path: str) -> dict:
-    req = urllib.request.Request(
-        f"https://api.nasdaq.com/api/quote/SPY/{path}",
-        headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        return json.load(r)["data"]
+# --- SPY ---------------------------------------------------------------------
+#
+# From 2026-11-10 api.nasdaq.com answered 403 to every GitHub runner while still
+# answering a laptop, and every edition for a week charted the 10Y instead of SPY
+# with only a ::warning:: in the log. So SPY now has three ways in, tried in order:
+#   1. Nasdaq through the compass-trigger Worker's /spy route (Cloudflare's IPs);
+#   2. Nasdaq direct, as before (still works from a laptop, and may recover);
+#   3. Tiingo through the Worker, keyed by its TIINGO_TOKEN secret.
+# Each answers in its own shape and is normalised here, so spy() and
+# spy_intraday() return exactly what they always have. Overridable like FRED_URL.
+SPY_URL = (os.environ.get("COMPASS_SPY_URL")
+           or "https://compass-trigger.hudson-394.workers.dev/spy")
+NY = zoneinfo.ZoneInfo("America/New_York")
+
+
+def _worker_get(params: dict, timeout: int = 30):
+    """One /spy call. A named User-Agent, for the same reason as _fred_worker."""
+    url = f"{SPY_URL}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "compass-newsletter/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        # The Worker says why (e.g. "nasdaq answered 403"); keep it in the reason.
+        try:
+            msg = json.loads(e.read()).get("error")
+        except Exception:
+            msg = None
+        raise RuntimeError(f"HTTP {e.code}" + (f": {msg}" if msg else "")) from None
+
+
+def _nasdaq_data(body) -> dict:
+    """Nasdaq's envelope is {"data": ..., "status": {...}}. A blocked or unknown
+    request can come back 200 with data null, which used to surface as a bare
+    TypeError three calls later."""
+    if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+        raise ValueError("no data in Nasdaq answer")
+    return body["data"]
+
+
+def _nasdaq(kind: str, **q) -> dict:
+    """One Nasdaq quote call for SPY: the Worker first, then direct.
+
+    kind is info, chart or historical; historical takes from= and to= (ISO dates).
+    Raises with both reasons if neither way in answers.
+    """
+    why = []
+    try:
+        return _nasdaq_data(_worker_get({"src": "nasdaq", "kind": kind, **q}))
+    except Exception as e:
+        why.append(f"via worker {_reason(e)}")
+    path = f"{kind}?assetclass=etf"
+    if kind == "historical":
+        path += f"&fromdate={q['from']}&todate={q['to']}&limit=400"
+    try:
+        req = urllib.request.Request(
+            f"https://api.nasdaq.com/api/quote/SPY/{path}",
+            headers={"User-Agent": UA, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return _nasdaq_data(json.load(r))
+    except Exception as e:
+        why.append(f"direct {_reason(e)}")
+    raise RuntimeError(", ".join(why))
 
 
 def _num(s) -> float:
     return float(str(s).replace("$", "").replace(",", "").replace("%", ""))
 
 
-def spy() -> dict:
-    """A year of SPY daily closes, with the live quote as the newest point.
-
-    The historical table lags a session — at 5pm ET it still ends at yesterday's
-    close — so the live quote is appended whenever it is newer. Both editions run
-    while the market is open, so the last point is the price as the reader wakes
-    up to it, not yesterday's.
-    """
-    today = _today()
-    # 366 days rather than replace(year=-1), which raises on Feb 29.
-    hist = _nasdaq(f"historical?assetclass=etf&fromdate={today - dt.timedelta(days=366)}"
-                   f"&todate={today}&limit=400")
-    rows = hist["tradesTable"]["rows"]
-    ser = sorted(
-        [dt.datetime.strptime(r["date"], "%m/%d/%Y").date().isoformat(), _num(r["close"])]
-        for r in rows)
-    if not ser:
-        return {}
-    try:
-        q = _nasdaq("info?assetclass=etf")["primaryData"]
-        when = dt.datetime.strptime(q["lastTradeTimestamp"].split(" ET")[0].strip(),
-                                    "%b %d, %Y %I:%M %p").date().isoformat()
-        px = _num(q["lastSalePrice"])
-        if when > ser[-1][0]:
-            ser.append([when, px])
-        elif when == ser[-1][0]:
-            ser[-1][1] = px
-    except Exception as e:
-        print(f"  spy live quote: unavailable ({type(e).__name__}) — using last close")
-
+def _daily_stats(ser: list) -> dict:
+    """spy, spy_as_of and the moves art.py and the curator read, from daily closes."""
     closes = [v for _, v in ser]
     out = {"spy": round(closes[-1], 2), "spy_as_of": ser[-1][0], "spy_series": ser}
     if len(closes) >= 2:
@@ -276,19 +312,125 @@ def spy() -> dict:
     return out
 
 
-NY = zoneinfo.ZoneInfo("America/New_York")
+def _with_last(ser: list, when: str, px: float) -> None:
+    """Fold a live quote into the daily closes: newer appends, same day replaces."""
+    if when > ser[-1][0]:
+        ser.append([when, px])
+    elif when == ser[-1][0]:
+        ser[-1][1] = px
+
+
+def _spy_nasdaq() -> dict:
+    today = _today()
+    # 366 days rather than replace(year=-1), which raises on Feb 29.
+    hist = _nasdaq("historical", **{"from": str(today - dt.timedelta(days=366)),
+                                    "to": str(today)})
+    rows = hist["tradesTable"]["rows"]
+    ser = sorted(
+        [dt.datetime.strptime(r["date"], "%m/%d/%Y").date().isoformat(), _num(r["close"])]
+        for r in rows)
+    if not ser:
+        return {}
+    try:
+        q = _nasdaq("info")["primaryData"]
+        when = dt.datetime.strptime(q["lastTradeTimestamp"].split(" ET")[0].strip(),
+                                    "%b %d, %Y %I:%M %p").date().isoformat()
+        _with_last(ser, when, _num(q["lastSalePrice"]))
+    except Exception as e:
+        print(f"  spy live quote: unavailable ({type(e).__name__}) — using last close")
+    return _daily_stats(ser)
+
+
+def _et_wall_ms(stamp: str) -> int:
+    """An ISO timestamp as ET wall-clock milliseconds read as UTC — the convention
+    spy_intraday() stores and art.py reads."""
+    t = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    wall = t.astimezone(NY).replace(tzinfo=dt.timezone.utc)
+    return int(wall.timestamp() * 1000)
+
+
+def _spy_tiingo() -> dict:
+    today = _today()
+    rows = _worker_get({"src": "tiingo", "kind": "daily",
+                        "from": str(today - dt.timedelta(days=366))})
+    ser = sorted([str(r["date"])[:10], float(r["close"])]
+                 for r in rows or [] if r.get("date") and r.get("close") is not None)
+    if not ser:
+        return {}
+    try:
+        q = (_worker_get({"src": "tiingo", "kind": "quote"}) or [{}])[0]
+        px = q.get("tngoLast") or q.get("last")
+        if px is not None and q.get("timestamp"):
+            when = dt.datetime.fromtimestamp(_et_wall_ms(q["timestamp"]) / 1000,
+                                             dt.timezone.utc).date().isoformat()
+            _with_last(ser, when, float(px))
+    except Exception as e:
+        print(f"  spy live quote (tiingo): unavailable ({type(e).__name__}) — using last close")
+    return _daily_stats(ser)
+
+
+def _spy_intraday_tiingo() -> dict:
+    # Five days back so a weekend or holiday still finds the last session; only
+    # that session's points are kept.
+    rows = _worker_get({"src": "tiingo", "kind": "iex",
+                        "from": str(_today() - dt.timedelta(days=5))})
+    pts = sorted((_et_wall_ms(r["date"]), float(r["close"]))
+                 for r in rows or [] if r.get("date") and r.get("close") is not None)
+    if len(pts) < 2:
+        return {}
+    day = lambda ms: dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).date()  # noqa: E731
+    last = day(pts[-1][0])
+    ser = [[x, round(y, 3)] for x, y in pts if day(x) == last]
+    if len(ser) < 2:
+        return {}
+    return {"spy_intraday": ser, "spy_session": last.isoformat(), "spy": ser[-1][1]}
+
+
+def _first(name: str, tries) -> dict:
+    """The first source in `tries` that answers with data. Raises with every reason
+    when none does, so main() logs one line that says why each way in failed."""
+    why = []
+    for src, fn in tries:
+        try:
+            data = fn()
+        except Exception as e:
+            why.append(f"{src}: {_reason(e)[:160]}")
+            continue
+        if data:
+            print(f"  {name} via {src}")
+            return data
+        why.append(f"{src}: no data")
+    raise RuntimeError("; ".join(why))
+
+
+def spy() -> dict:
+    """A year of SPY daily closes, with the live quote as the newest point.
+
+    The historical table lags a session — at 5pm ET it still ends at yesterday's
+    close — so the live quote is appended whenever it is newer. Both editions run
+    while the market is open, so the last point is the price as the reader wakes
+    up to it, not yesterday's.
+    """
+    return _first("spy", (("nasdaq", _spy_nasdaq), ("tiingo", _spy_tiingo)))
 
 
 def spy_intraday() -> dict:
     """Today's SPY tape — or the last session's, on a weekend or holiday.
 
-    Nasdaq returns one point a minute from the 4:00am ET pre-market onward. Five-
-    minute buckets are plenty for a 550px chart and keep the series file small.
-    publish.py calls this again just before the send so each edition's chart runs
-    as late as it can: the morning one is the pre-market and the open, the
-    afternoon one most of the day.
+    Five-minute buckets are plenty for a 550px chart and keep the series file
+    small. publish.py calls this again just before the send so each edition's
+    chart runs as late as it can: the morning one is the pre-market and the open,
+    the afternoon one most of the day.
     """
-    d = _nasdaq("chart?assetclass=etf")
+    return _first("spy intraday", (("nasdaq", _spy_intraday_nasdaq),
+                                   ("tiingo", _spy_intraday_tiingo)))
+
+
+def _spy_intraday_nasdaq() -> dict:
+    """Nasdaq returns one point a minute from the 4:00am ET pre-market onward."""
+    d = _nasdaq("chart")
     pts = [(int(p["x"]), float(p["y"])) for p in d.get("chart") or []
            if p.get("x") is not None and p.get("y") is not None]
     if len(pts) < 2:
@@ -329,9 +471,13 @@ def settle_spy(out: dict) -> None:
     sess = out.get("spy_session") or out.get("spy_as_of")
     if sess:
         out["spy_session"] = sess
-        prior = [v for d, v in daily if d < sess]
-        if prior:
-            out["spy_prev_close"] = prior[-1]
+        prior = [(d, v) for d, v in daily if d < sess]
+        # Closes from state/spy.json can end sessions before this one; then the
+        # last of them is not the prior close and the day's move would be wrong.
+        cached = bool(out.get("spy_cache_as_of"))
+        if prior and not (cached and _bdays(dt.date.fromisoformat(prior[-1][0]),
+                                            dt.date.fromisoformat(sess)) > 1):
+            out["spy_prev_close"] = prior[-1][1]
     if out.get("spy") is not None and out.get("spy_prev_close"):
         out["spy_day_pct"] = round((out["spy"] / out["spy_prev_close"] - 1) * 100, 2)
 
@@ -384,6 +530,13 @@ def _fred_csv(series: str) -> list[tuple[str, float]]:
 
 def _why(e: Exception) -> str:
     return f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError) else type(e).__name__
+
+
+def _reason(e: Exception) -> str:
+    """_why, but keeping the message of an error this file raised itself."""
+    if isinstance(e, urllib.error.HTTPError):
+        return f"HTTP {e.code}"
+    return str(e) if isinstance(e, (RuntimeError, ValueError)) and str(e) else type(e).__name__
 
 
 def fred(series: str) -> tuple[str, list, str]:
@@ -522,24 +675,125 @@ SOURCES = (
 )
 
 
+# The last good run's completed SPY closes. Committed by the workflow's "Record
+# section coverage" step (market.py --keep-spy) so that when every SPY source is
+# down, the cover still charts SPY — dated in its caption — rather than the 10Y.
+# Older than this many business days, it is not used: a chart that old is not the
+# day's market, and the 10Y (which comes from Treasury, not Nasdaq) is.
+SPY_CACHE = "state/spy.json"
+SPY_CACHE_MAX_BDAYS = 5
+
+
+def _spy_cache(today: dt.date) -> dict | None:
+    try:
+        with open(SPY_CACHE) as f:
+            c = json.load(f)
+        ser, as_of = c["spy_series"], c["as_of"]
+        age = _bdays(dt.date.fromisoformat(as_of), today)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"  {SPY_CACHE}: unreadable ({type(e).__name__}) — not used")
+        return None
+    if age > SPY_CACHE_MAX_BDAYS or len(ser) < 20:
+        print(f"  {SPY_CACHE}: as of {as_of}, {age} business days old — too old to chart")
+        return None
+    return {"spy_series": ser, "spy_cache_as_of": as_of}
+
+
+def keep_spy(market_path: str = "market.json") -> int:
+    """After a shipped edition: save this run's live SPY closes to state/spy.json.
+
+    Only completed sessions are kept. Both editions run while the market is open,
+    so a point dated today is a mid-session price, not a close, and would read as
+    the prior close in tomorrow's day move. A run whose closes came from the cache
+    itself writes nothing. Exits 0 either way: this must never fail the record step.
+    """
+    try:
+        m = load_market(market_path)
+    except Exception as e:
+        print(f"keep-spy: no market data ({type(e).__name__}) — {SPY_CACHE} unchanged")
+        return 0
+    if m.get("spy_cache_as_of"):
+        print(f"keep-spy: this run charted cached closes — {SPY_CACHE} unchanged")
+        return 0
+    today = _today().isoformat()
+    ser = [p for p in m.get("spy_series") or [] if p[0] < today]
+    if len(ser) < 20:
+        print(f"keep-spy: no live SPY closes this run — {SPY_CACHE} unchanged")
+        return 0
+    try:
+        with open(SPY_CACHE) as f:
+            old = json.load(f).get("as_of", "")
+    except Exception:
+        old = ""
+    if old >= ser[-1][0]:
+        print(f"keep-spy: {SPY_CACHE} already as of {old}")
+        return 0
+    os.makedirs(os.path.dirname(SPY_CACHE), exist_ok=True)
+    with open(SPY_CACHE, "w") as f:
+        json.dump({"as_of": ser[-1][0], "spy_series": ser[-260:]}, f,
+                  separators=(",", ":"))
+        f.write("\n")
+    print(f"keep-spy: {SPY_CACHE} now as of {ser[-1][0]} ({len(ser[-260:])} closes)")
+    return 0
+
+
+def _alert(subject: str, body: str) -> None:
+    """The run's own alert channel (scripts/alert.py): an annotation and a step
+    summary section. The newsletter is the only email this pipeline sends."""
+    try:
+        import alert
+        alert.alert(subject, body)
+    except Exception as e:
+        print(f"::warning::{subject} (alert.py unavailable: {type(e).__name__})")
+
+
 def main() -> None:
     today = _today()
     out: dict = {"generated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
 
+    failed = {}
     for name, fn, replaces in SOURCES:
         try:
             data = fn()
         except Exception as e:
-            print(f"::warning::market: {name} unavailable ({type(e).__name__}: "
-                  f"{str(e)[:120]})".replace("\n", " "))
+            failed[name] = _reason(e)[:300].replace("\n", " ")
+            print(f"::warning::market: {name} unavailable ({failed[name][:200]})")
             continue
         if not data:
+            failed[name] = "returned nothing"
             print(f"::warning::market: {name} returned nothing")
             continue
         data = _fresh(name, data, today)
         if data:
             _merge(out, data, name, replaces)
             print(f"  {name}: {_summary(name, data)}")
+        else:
+            failed[name] = "stale, dropped"
+
+    # A week of editions charted the 10Y in place of SPY before anyone noticed:
+    # the only trace was a ::warning:: in a step nobody opens. Say it in the run's
+    # summary, and chart the last good closes rather than nothing.
+    live = "spy_series" in out or "spy_intraday" in out
+    chart = "live SPY"
+    if "spy_series" not in out:
+        cached = _spy_cache(today)
+        if cached:
+            out.update(cached)
+            chart = f"SPY closes cached to {cached['spy_cache_as_of']}"
+            print(f"  spy: charting {len(cached['spy_series'])} cached closes "
+                  f"to {cached['spy_cache_as_of']} ({SPY_CACHE})")
+        elif not live:
+            chart = "the US 10Y (no SPY data at all)"
+    if failed:
+        lines = [f"{k}: {v}" for k, v in failed.items()]
+        spy_down = not live
+        subject = (f"COMPASS: SPY unavailable — the cover charts {chart}" if spy_down
+                   else f"COMPASS: market source missing ({', '.join(failed)})")
+        _alert(subject, "\n".join(lines + [
+            "", "The edition still ships; these numbers are absent from it.",
+            "SPY sources and their fixes: README.md, 'The cover charts the 10Y'."]))
 
     settle_spy(out)
     if out.get("spy_day_pct") is not None:
@@ -575,7 +829,8 @@ def main() -> None:
     have = [k for k in ("y10", "mortgage30", "spy", *FRED_SERIES.values()) if k in snap]
     print(f"\nmarket.json: {len(snap) - 1} fields, key series present: {have or 'NONE'}")
     print("market_series.json: "
-          + (", ".join(f"{k} ({len(v)} points)" for k, v in series.items()) or "no charts"))
+          + (", ".join(f"{k} ({len(v)} points)" if isinstance(v, list) else f"{k} {v}"
+                       for k, v in series.items()) or "no charts"))
     with open("market.json", "w") as f:
         json.dump(snap, f, indent=1)
     # Written even when empty, so load_market() can never merge an earlier run's
@@ -585,4 +840,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import sys
+    if sys.argv[1:] == ["--keep-spy"]:
+        sys.exit(keep_spy())
     main()
