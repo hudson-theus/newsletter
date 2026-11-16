@@ -151,6 +151,7 @@ dispatches recovery runs and pushes the coverage commit.
 |---|---|
 | `GITHUB_TOKEN` | A GitHub personal access token that can dispatch workflows on this repository (fine-grained: Actions read and write). It has the expiry chosen when it was created; when it lapses, the Worker's dispatches fail with 401, every edition falls to the late GitHub crons, and the watchdog stops running too. Late editions are the sign. |
 | `FRED_API_KEY` | A free key from fred.stlouisfed.org. The Worker serves `/fred?series=ID` to `market.py` for exactly five series, so the key never enters the repo or a workflow log. |
+| `TIINGO_TOKEN` | A free key from tiingo.com. The Worker's `/spy?src=tiingo` route uses it as SPY's third source, after Nasdaq through the Worker and Nasdaq direct. Optional: without it that route answers 503 and the chain ends at Nasdaq. |
 
 Rotation dates are not recorded anywhere automatically. When you create or rotate
 a token, note its expiry somewhere you will see it.
@@ -224,10 +225,15 @@ repository instead, it deploys on push, but only with **Root directory** set to
 Verify after deploying:
 
 - `GET https://compass-trigger.hudson-394.workers.dev/` reports the Chicago time,
-  which edition is due, and whether `GITHUB_TOKEN` and `FRED_API_KEY` are set. It
+  which edition is due, and whether `GITHUB_TOKEN`, `FRED_API_KEY` and
+  `TIINGO_TOKEN` are set. It
   never dispatches anything.
 - `GET https://compass-trigger.hudson-394.workers.dev/fred?series=UNRATE` returns
   recent observations.
+- `GET https://compass-trigger.hudson-394.workers.dev/spy?src=nasdaq&kind=info`
+  returns Nasdaq's SPY quote (`"data": {...}`). A `502` naming `nasdaq answered 403`
+  means Nasdaq blocks Cloudflare too; then set `TIINGO_TOKEN` and check
+  `/spy?src=tiingo&kind=quote`.
 - At the next slot, the Actions tab shows a run named `COMPASS am · worker` (or
   `pm`).
 
@@ -279,6 +285,18 @@ inside each FRED value); the Treasury print is normally the previous business
 day's close. If the input was right and the prose was wrong, tighten the
 **Numbers** section of `prompts/curate.md`. If FRED series are missing, check
 `fred_configured` on the Worker's status page and the `/fred` route.
+
+**The cover charts the 10Y, or SPY is missing from the rail and ticker.** SPY
+did not load. The run's summary has a *COMPASS: SPY unavailable* section naming
+each source's failure. `market.py` tries, in order, Nasdaq through the Worker's
+`/spy` route, Nasdaq direct, and Tiingo through the Worker (needs the
+`TIINGO_TOKEN` Worker secret). From 2026-11-10 Nasdaq answered 403 to every
+GitHub runner, and for a week every edition charted the 10Y with only a log
+warning. When every source fails, the cover charts the last shipped run's closes
+from `state/spy.json` (captioned `TO <date>`; the rail and ticker leave SPY out
+rather than print a stale price); after five business days without a fresh read
+it falls back to the 10Y. Check the Worker's status page and the `/spy` URLs
+under *Deploying the Worker*.
 
 **A feed died.** The *Collect candidates* step logs every feed with its item count,
 or `FAILED (reason) URL`. Feeds live in `FEEDS` in `scripts/collect.py`, each as

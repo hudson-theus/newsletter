@@ -649,12 +649,16 @@ jobs:
           git config user.name  "compass-bot"
           git config user.email "compass-bot@users.noreply.github.com"
           for TRY in 1 2 3; do
+            # market.py --keep-spy saves this run's SPY closes (read from the
+            # untracked market_series.json, which the reset leaves alone) so a
+            # later run with every SPY source down still charts SPY.
             if git fetch -q --depth=1 "$REMOTE" "$REF" && git reset -q --hard FETCH_HEAD &&
                python scripts/sections.py --record; then
-              if git diff --quiet -- state/sections.json; then
+              python scripts/market.py --keep-spy || true
+              if [ -z "$(git status --porcelain -- state/)" ]; then
                 echo "no coverage change to record"; exit 0
               fi
-              if git add state/sections.json &&
+              if git add -A -- state/ &&
                  git commit -q -m "state: section coverage after $ED $TODAY" &&
                  git push -q "$REMOTE" "HEAD:$REF"; then
                 echo "recorded and pushed (try $TRY)"; exit 0

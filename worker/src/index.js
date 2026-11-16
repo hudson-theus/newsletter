@@ -116,21 +116,106 @@ export default {
   // GET /fred?series=ID proxies FRED's official API for market.py. The key stays a
   // Worker secret (it is never in the public repo or a workflow log), and only the
   // series COMPASS charts are served, so this cannot be used as an open FRED proxy.
+  // GET /spy?src=nasdaq|tiingo&kind=... serves SPY for the cover (see spy() below).
   // GET / reports what the Worker would do right now, so the whole chain can be
   // verified without waiting for a cron fire. It never dispatches.
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/fred") return fred(url, env, ctx);
+    if (url.pathname === "/spy") return spy(url, env);
+    // Anything else that is not the status page is refused, so market.py can tell
+    // "this Worker has no such route" from a real answer.
+    if (url.pathname !== "/") {
+      return Response.json({ error: "no such route" }, { status: 404 });
+    }
     const now = chicagoNow();
     return Response.json({
       chicago: `${now.weekday} ${String(now.hour).padStart(2, "0")}:00`,
       edition_due: editionDue(now),
       token_configured: Boolean(env.GITHUB_TOKEN),
       fred_configured: Boolean(env.FRED_API_KEY),
+      tiingo_configured: Boolean(env.TIINGO_TOKEN),
       repo: REPO,
     });
   },
 };
+
+// SPY for the cover chart, the rail and the ticker.
+//
+// From 2026-11-10 api.nasdaq.com answered 403 to every request from GitHub's
+// runners while still answering a laptop, and the cover fell back to the 10Y
+// chart for a week with nothing but a ::warning:: to show for it. Two routes:
+//   src=nasdaq  the same public quote API, fetched from Cloudflare's network
+//               instead of GitHub's. No key.
+//   src=tiingo  Tiingo's API, keyed (TIINGO_TOKEN secret), as the source that
+//               does not depend on an unkeyed endpoint tolerating cloud IPs.
+// Only SPY, and only the handful of calls market.py makes, so this is not an open
+// proxy for either API. Nothing is cached: the intraday tape must be live.
+const NASDAQ_KINDS = new Set(["info", "chart", "historical"]);
+const TIINGO_KINDS = new Set(["daily", "iex", "quote"]);
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+  + "(KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+
+async function spy(url, env) {
+  const src = url.searchParams.get("src");
+  const kind = url.searchParams.get("kind") || "";
+  const from = url.searchParams.get("from") || "";
+  const to = url.searchParams.get("to") || "";
+  if ((from && !DAY.test(from)) || (to && !DAY.test(to))) {
+    return Response.json({ error: "from/to must be YYYY-MM-DD" }, { status: 400 });
+  }
+  let api, headers;
+  if (src === "nasdaq" && NASDAQ_KINDS.has(kind)) {
+    api = `https://api.nasdaq.com/api/quote/SPY/${kind}?assetclass=etf`;
+    if (kind === "historical") {
+      if (!from || !to) return Response.json({ error: "historical needs from and to" }, { status: 400 });
+      api += `&fromdate=${from}&todate=${to}&limit=400`;
+    }
+    headers = {
+      "User-Agent": BROWSER_UA,
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.nasdaq.com",
+      Referer: "https://www.nasdaq.com/",
+    };
+  } else if (src === "tiingo" && TIINGO_KINDS.has(kind)) {
+    if (!env.TIINGO_TOKEN) {
+      return Response.json({ error: "TIINGO_TOKEN secret is not set" }, { status: 503 });
+    }
+    if (kind === "daily") {
+      if (!from) return Response.json({ error: "daily needs from" }, { status: 400 });
+      api = `https://api.tiingo.com/tiingo/daily/SPY/prices?startDate=${from}`;
+    } else if (kind === "iex") {
+      if (!from) return Response.json({ error: "iex needs from" }, { status: 400 });
+      // afterHours brings in the pre-market, which the morning cover draws dimmed.
+      api = `https://api.tiingo.com/iex/SPY/prices?startDate=${from}`
+        + "&resampleFreq=5min&afterHours=true";
+    } else {
+      api = "https://api.tiingo.com/iex/SPY";
+    }
+    headers = {
+      "User-Agent": "compass-trigger",
+      Accept: "application/json",
+      Authorization: `Token ${env.TIINGO_TOKEN}`,
+    };
+  } else {
+    return Response.json({ error: "not served" }, { status: 404 });
+  }
+  let res;
+  try {
+    res = await fetch(api, { headers });
+  } catch (e) {
+    return Response.json({ error: `${src} unreachable: ${e.message}` }, { status: 502 });
+  }
+  if (!res.ok) {
+    return Response.json({ error: `${src} answered ${res.status}` }, { status: 502 });
+  }
+  // Passed through as-is: market.py parses each source's own shape.
+  return new Response(await res.text(), {
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
 
 // The series market.py reads. Anything else is refused.
 const FRED_SERIES = new Set([
