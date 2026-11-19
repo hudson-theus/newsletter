@@ -51,7 +51,7 @@ jobs:
       # No setup-python: the watchdog runs only alert.py (standard library), and
       # the runner image's python3 means one fewer step that can fail before the
       # alert.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Check, recover, report
         id: check
